@@ -264,4 +264,11 @@ pub const ExprManager = struct {
     pub fn getKind(self: *const Self, e: Expr) ExprKind {
         return self.getNode(e).content.kind();
     }
+
+    pub fn isAtomic(self: *const Self, e: Expr) bool {
+        return switch (self.getKind(e)) {
+            .bvar, .sort, .cnst => true,
+            else => false
+        };
+    }
 };
