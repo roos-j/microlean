@@ -1,5 +1,5 @@
 const std = @import("std");
-const NameId = @import("common.zig").NameId;
+const Name = @import("common.zig").Name;
 const oom = @import("common.zig").oom;
 
 // Universe level
@@ -12,20 +12,20 @@ pub const LevelKind = enum { zero, succ, max, param };
 pub const level_zero: Level = 0;
 pub const level_one: Level = 1;
 
-pub const LevelData = union(LevelKind) {
+pub const LevelContent = union(LevelKind) {
     zero: void,
     succ: Level,
     max: LevelMax,
-    param: NameId,
+    param: Name,
 
-    pub inline fn kind(self: LevelData) LevelKind {
+    pub inline fn kind(self: LevelContent) LevelKind {
         return std.meta.activeTag(self);
     }
 };
 
 // Optimizations to add later: normalization, has_param, depth, explicit_offset
 pub const LevelNode = struct { 
-    data: LevelData, 
+    content: LevelContent, 
     depth: u32, 
     offset_base: Level, 
     offset: u32,
@@ -40,9 +40,9 @@ pub const LevelManager = struct {
 
     allocator: std.mem.Allocator,
     nodes: std.ArrayList(LevelNode) = .empty,
-    hash_map: std.AutoHashMap(LevelData, Level),
+    hash_map: std.AutoHashMap(LevelContent, Level),
 
-    const GetOrPutResult = std.AutoHashMap(LevelData, Level).GetOrPutResult;
+    const GetOrPutResult = std.AutoHashMap(LevelContent, Level).GetOrPutResult;
 
     pub fn init(allocator: std.mem.Allocator) !Self {
         var self: Self = .{ .allocator = allocator, .hash_map = .init(allocator) };
@@ -51,17 +51,17 @@ pub const LevelManager = struct {
     }
 
     fn initZeroOne(self: *Self) void {
-        const zero: LevelNode = .{ .data = .zero, .depth = 0, .has_param = false, .offset = 0, .offset_base = 0, .is_explicit = true };
-        const one: LevelNode = .{ .data = .{ .succ = 0 }, .depth = 1, .has_param = false, .offset = 1, .offset_base = 0, .is_explicit = true };
+        const zero: LevelNode = .{ .content = .zero, .depth = 0, .has_param = false, .offset = 0, .offset_base = 0, .is_explicit = true };
+        const one: LevelNode = .{ .content = .{ .succ = 0 }, .depth = 1, .has_param = false, .offset = 1, .offset_base = 0, .is_explicit = true };
         self.insertNode(zero);
         self.insertNode(one);
         // We don't add these to hash map
     }
 
-    fn cache(self: *Self, data: LevelData) GetOrPutResult {
-        std.debug.assert(data.kind() != .zero);
-        std.debug.assert(!(data.kind() == .succ and data.succ == 0));
-        const result = self.hash_map.getOrPut(data) catch oom();
+    fn cache(self: *Self, content: LevelContent) GetOrPutResult {
+        std.debug.assert(content.kind() != .zero);
+        std.debug.assert(!(content.kind() == .succ and content.succ == 0));
+        const result = self.hash_map.getOrPut(content) catch oom();
         if (result.found_existing) {
             return result;
         }
@@ -79,8 +79,8 @@ pub const LevelManager = struct {
         return self.nodes.items[lvl];
     }
 
-    pub fn get(self: *const Self, lvl: Level) LevelData {
-        return self.nodes.items[lvl].data;
+    pub fn get(self: *const Self, lvl: Level) LevelContent {
+        return self.nodes.items[lvl].content;
     }
 
     pub fn hasParam(self: *const Self, lvl: Level) bool {
@@ -119,12 +119,12 @@ pub const LevelManager = struct {
 
     pub fn mkSucc(self: *Self, lvl: Level) Level {
         if (lvl == 0) return 1;
-        const data: LevelData = .{ .succ = lvl };
-        const result = self.cache(data);
+        const content: LevelContent = .{ .succ = lvl };
+        const result = self.cache(content);
         const id: Level = result.value_ptr.*;
         if (result.found_existing) return id;
-        // Compute metadata for new node
-        const node: LevelNode = .{ .data = data, 
+        // Compute metacontent for new node
+        const node: LevelNode = .{ .content = content, 
             .depth = self.getDepth(lvl)+1, .has_param = self.hasParam(lvl), 
             .offset_base = self.getOffsetBase(lvl), 
             .offset = self.getOffset(lvl)+1,
@@ -144,13 +144,13 @@ pub const LevelManager = struct {
             return lhs;
         }
         // Todo: add more simplifications
-        const data: LevelData = .{ .max = .{ .lhs = lhs, .rhs = rhs } };
-        const result = self.cache(data);
+        const content: LevelContent = .{ .max = .{ .lhs = lhs, .rhs = rhs } };
+        const result = self.cache(content);
         const id: Level = result.value_ptr.*;
         if (result.found_existing) {
             return id;
         }
-        const node: LevelNode = .{ .data = data,
+        const node: LevelNode = .{ .content = content,
             .depth = @max(self.getDepth(lhs), self.getDepth(rhs)) + 1, 
             .has_param = self.hasParam(lhs) or self.hasParam(rhs),
             .offset = 0,
@@ -160,14 +160,14 @@ pub const LevelManager = struct {
         return id;
     }
 
-    pub fn mkParam(self: *Self, name: NameId) Level {
-        const data: LevelData = .{ .param = name };
-        const result = self.cache(data);
+    pub fn mkParam(self: *Self, name: Name) Level {
+        const content: LevelContent = .{ .param = name };
+        const result = self.cache(content);
         const id: Level = result.value_ptr.*;
         if (result.found_existing) {
             return id;
         }
-        const node: LevelNode = .{ .data = data,
+        const node: LevelNode = .{ .content = content,
             .depth = 0, .has_param = true,
             .offset = 0, .offset_base = id,
             .is_explicit = false };
@@ -181,8 +181,8 @@ pub const LevelManager = struct {
             std.debug.print("{d}", .{node.offset});
             return;
         }
-        const data = self.get(node.offset_base);
-        switch (data) {
+        const content = self.get(node.offset_base);
+        switch (content) {
             .zero, .succ => unreachable,
             .max => |m| {
                 std.debug.print("max(", .{});

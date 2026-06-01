@@ -4,7 +4,7 @@ pub fn oom() noreturn {
 
 // pub const Name = []const u8;
 
-pub const NameId = u32;
+pub const Name = u32;
 
 // pub fn CachedStore(comptime Id: type, comptime Data: type) type 
 //     return struct {
