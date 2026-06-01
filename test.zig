@@ -1,5 +1,6 @@
 const std = @import("std");
 const LevelManager = @import("src/level.zig").LevelManager;
+const ExprManager = @import("src/expr.zig").ExprManager;
 
 test "LevelTest" {
     var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
@@ -48,4 +49,57 @@ test "LevelTest" {
     try std.testing.expect(three == mgr.mkSucc(mgr.mkMax(mgr.mkOne(), mgr.mkSucc(mgr.mkOne()))));
     try std.testing.expect(!mgr.equal(mgr.mkParam(0), mgr.mkParam(1)));
     try std.testing.expect(!mgr.equal(mgr.mkSucc(param0), mgr.mkSucc(mgr.mkParam(1))));
+}
+
+test "ExprTest" {
+    var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var lm: LevelManager = try LevelManager.init(allocator);
+    var em: ExprManager = ExprManager.init(allocator, &lm);
+
+    const u = lm.mkParam(0);
+
+    const Prop = em.mkSort(0);
+    const Type = em.mkSort(1);
+    const Sortu = em.mkSort(u);
+
+    try std.testing.expect(!em.hasLevelParam(Prop));
+    try std.testing.expect(em.hasLevelParam(Sortu));
+    try std.testing.expect(em.getKind(Type) == .sort);
+
+    const nf = 1;
+    const f = em.mkConst(nf, &.{});
+    try std.testing.expect(em.getKind(f) == .cnst);
+    // lam x : Sort u => x
+    const e_id = em.mkLambda(nf, Sortu, em.mkBvar(0));
+    try std.testing.expect(em.hasLevelParam(e_id));
+    try std.testing.expect(em.getLooseBvarRange(e_id) == 0);
+    try std.testing.expect(em.getKind(e_id) == .lambda);
+
+    const e_loose = em.mkApp(f,em.mkBvar(0));
+    try std.testing.expect(em.getLooseBvarRange(e_loose) == 1);
+
+    // Type -> Prop
+    const nP = 2;
+    const e_tp = em.mkForallE(nP, Type, Prop);
+    try std.testing.expect(em.getApproxDepth(e_tp) == 1);
+    try std.testing.expect(!em.hasLevelParam(e_tp));
+    try std.testing.expect(em.getLooseBvarRange(e_tp) == 0);
+
+    const e_nonsense = em.mkForallE(nf, em.mkBvar(1), em.mkApp(em.mkConst(nP, &.{u, Prop}), e_tp));
+    try std.testing.expect(em.getApproxDepth(e_nonsense) == 3);
+    try std.testing.expect(em.hasLevelParam(e_nonsense));
+    try std.testing.expect(em.getLooseBvarRange(e_nonsense) == 2);
+
+    const nx = 3;
+    const target_depth = 256;
+    var current_depth: u32 = 1;
+    var e_deep = em.mkApp(nf, nx);
+    while (current_depth < target_depth) {
+        try std.testing.expect(em.getApproxDepth(e_deep) == @min(current_depth, 255)); 
+        e_deep = em.mkApp(nf, e_deep);
+        current_depth += 1;
+    }
 }
