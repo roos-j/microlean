@@ -44,8 +44,9 @@ pub const LevelManager = struct {
 
     const GetOrPutResult = std.AutoHashMap(LevelContent, Level).GetOrPutResult;
 
-    pub fn init(allocator: std.mem.Allocator) !Self {
-        var self: Self = .{ .allocator = allocator, .hash_map = .init(allocator) };
+    pub fn create(allocator: std.mem.Allocator) *LevelManager {
+        const self = allocator.create(LevelManager) catch oom();
+        self.* = .{ .allocator = allocator, .hash_map = .init(allocator) };
         self.initZeroOne();
         return self;
     }
@@ -58,6 +59,7 @@ pub const LevelManager = struct {
         // We don't add these to hash map
     }
 
+    // Todo: refactor
     fn cache(self: *Self, content: LevelContent) GetOrPutResult {
         std.debug.assert(content.kind() != .zero);
         std.debug.assert(!(content.kind() == .succ and content.succ == 0));
