@@ -1,3 +1,5 @@
+const std = @import("std");
+
 pub fn oom() noreturn {
     @panic("out of memory");
 }
@@ -6,34 +8,42 @@ pub fn oom() noreturn {
 
 pub const Name = u32;
 
-// pub fn CachedStore(comptime Id: type, comptime Data: type) type 
-//     return struct {
-//         const Self = @This();
+/// Wrapper for an array list with an allocator and panic on out of memory.
+pub fn Buffer(comptime T: type) type {
+    return struct {
+        const Self = @This();
 
-//         pub const Node = struct { data: Data };
+        allocator: std.mem.Allocator,
+        list: std.ArrayList(T) = .empty,
 
-//         allocator: std.mem.Allocator,
-//         nodes: std.ArrayList(Node) = .empty,
-//         hash_map: std.AutoHashMap(Data, Id),
+        pub fn init(allocator: std.mem.Allocator) Self {
+            return .{ .allocator = allocator };
+        }
 
-//         pub fn init(allocator: std.mem.Allocator) Self {
-//             return .{ .allocator = allocator, .hash_map = .init(allocator) };
-//         }
+        pub fn deinit(self: *Self) void {
+            self.list.deinit(self.allocator);
+        }
 
-//         pub fn insert(self: *Self, data: Data) !Id {
-//             const result = try self.hash_map.getOrPut(data);
-//             if (result.found_existing) {
-//                 return result.value_ptr.*;
-//             } else {
-//                 const id: Id = @intCast(self.nodes.items.len);
-//                 try self.nodes.append(self.allocator, .{ .data = data });
-//                 result.value_ptr.* = id;
-//                 return id;
-//             }
-//         }
+        pub fn append(self: *Self, item: T) void {
+            self.list.append(self.allocator, item) catch oom();
+        }
 
-//         pub fn get(self: *const Self, id: Id) Data {
-//             return self.nodes.items[@intCast(id)].data;
-//         }
-//     };
-// }
+        pub fn pop(self: *Self) ?T {
+            return self.list.pop();
+        }
+
+        pub fn len(self: *const Self) usize {
+            return self.list.items.len;
+        }
+
+        /// Clear buffer retaining capacity
+        pub fn clear(self: *Self) void {
+            self.list.clearRetainingCapacity();
+        }
+
+        /// Get item at specified index. No bounds check performed.
+        pub fn get(self: *const Self, i: usize) T {
+            return self.list.items[i];
+        }
+    };
+}

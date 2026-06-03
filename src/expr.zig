@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const oom = @import("common.zig").oom;
+const Buffer = @import("common.zig").Buffer;
 const Name = @import("common.zig").Name;
 const Level = @import("level.zig").Level;
 const LevelManager = @import("level.zig").LevelManager;
@@ -220,6 +221,15 @@ pub const ExprManager = struct {
         return self;
     }
 
+    pub fn destroy(self: *Self) void {
+        for (self.stores.items) |store| {
+            store.deinit();
+            if (store != &self.globalStore) self.allocator.destroy(store);
+        }
+        self.stores.deinit(self.allocator);
+        self.allocator.destroy(self);
+    }
+
     pub fn getGlobalStore(self: *Self) *ExprStore {
         std.debug.assert(self.stores.items.len > 0);
         return &self.globalStore;
@@ -240,18 +250,18 @@ pub const ExprManager = struct {
         for (self.stores.items, 0..) |store, i| {
             if (!store.isOpen) { // Reopen this store
                 storeId = store.storeId;
-                std.debug.assert(storeId == i);
+                std.debug.assert(storeId.? == i);
                 store.isOpen = true;
                 std.debug.assert(store.nodes.items.len == 0);
                 std.debug.assert(store.hashMap.count() == 0);
                 break;
             }
         }
-        std.debug.assert(storeId orelse 0 > 0);
+        std.debug.assert(storeId orelse 1 > 0);
         if (storeId == null) {
             storeId = @intCast(self.stores.items.len);
             const new_store = self.allocator.create(ExprStore) catch oom();
-            new_store.init(self.allocator, self, storeId);
+            new_store.init(self.allocator, self, storeId.?);
             self.stores.append(self.allocator, new_store) catch oom();
         }
         return self.stores.items[storeId.?];
@@ -273,31 +283,69 @@ pub const ExprManager = struct {
         return self.stores.items[e.storeId].getNode(e);
     }
 
-    pub fn getApproxDepth(self: *const Self, e: Expr) u8 {
+    pub inline fn getApproxDepth(self: *const Self, e: Expr) u8 {
         return self.getNode(e).data.approx_depth;
     }
 
-    pub fn hasLevelParam(self: *const Self, e: Expr) bool {
+    pub inline fn hasLevelParam(self: *const Self, e: Expr) bool {
         return self.getNode(e).data.has_level_param;
     }
 
-    pub fn getLooseBvarRange(self: *const Self, e: Expr) u32 {
+    pub inline fn getLooseBvarRange(self: *const Self, e: Expr) u32 {
         return self.getNode(e).data.loose_bvar_range;
     }
 
-    pub fn getHash32(self: *const Self, e: Expr) u32 {
+    pub inline fn getHash32(self: *const Self, e: Expr) u32 {
         return self.getNode(e).data.hash;
     }
 
-    pub fn getKind(self: *const Self, e: Expr) ExprKind {
+    pub inline fn kind(self: *const Self, e: Expr) ExprKind {
         return self.getNode(e).content.kind();
     }
 
-    pub fn isAtomic(self: *const Self, e: Expr) bool {
-        return switch (self.getKind(e)) {
+    pub inline fn isBvar(self: *const Self, e: Expr) bool {
+        return self.kind(e) == .bvar;
+    }
+
+    pub inline fn isSort(self: *const Self, e: Expr) bool {
+        return self.kind(e) == .sort;
+    }
+
+    pub inline fn isConst(self: *const Self, e: Expr) bool {
+        return self.kind(e) == .cnst;
+    }
+
+    pub inline fn isApp(self: *const Self, e: Expr) bool {
+        return self.kind(e) == .app;
+    }
+
+    pub inline fn isLambda(self: *const Self, e: Expr) bool {
+        return self.kind(e) == .lambda;
+    }
+
+    pub inline fn isPi(self: *const Self, e: Expr) bool {
+        return self.kind(e) == .forallE;
+    }
+
+    pub inline fn isAtomic(self: *const Self, e: Expr) bool {
+        return switch (self.kind(e)) {
             .bvar, .sort, .cnst => true,
             else => false
         };
+    }
+
+    pub inline fn getApp(self: *const Self, e: Expr) ExprApp {
+        return self.getNode(e).content.app;
+    }
+
+    /// Unwrap function applications, store arguments in reversed order and return head function
+    pub fn getAppArgsRev(self: *const Self, e: Expr, args: *Buffer(Expr)) Expr {
+        var curr = e;
+        while (self.isApp(curr)) {
+            args.append(self.getApp(curr).arg);
+            curr = self.getApp(curr).fun;
+        }
+        return curr;
     }
 };
 
@@ -342,6 +390,10 @@ pub const ExprStore = struct {
             .lm = em.lm,
             .em = em };
         self.hashMap = .init(self.arena.allocator());
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.arena.deinit();
     }
 
     fn cache(self: *Self, content: ExprContent) Expr {

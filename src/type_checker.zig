@@ -1,34 +1,53 @@
 const std = @import("std");
 const oom = @import("common.zig").oom;
+const Buffer = @import("common.zig").Buffer;
 const Expr = @import("expr.zig").Expr;
 const ExprManager = @import("expr.zig").ExprManager;
 const ExprStore = @import("expr.zig").ExprStore;
 const LevelManager = @import("level.zig").LevelManager;
 
 pub const TypeChecker = struct {
+    const Self = @This();
 
-    
     arena: std.heap.ArenaAllocator,
     em: *ExprManager,
     lm: *LevelManager,
     whnf_cache: [2]std.hash_map.AutoHashMap(Expr, Expr),
-    bvar_ctx: std.ArrayList(Expr) = .empty,
+    bvar_ctx: Buffer(Expr) = undefined, // bound variable local context
 
-    pub fn create(allocator: std.mem.Allocator, em: *ExprManager) *TypeChecker {
-        const self = allocator.create(TypeChecker) catch oom();
+    // temporary buffers
+    get_args_buf: Buffer(Expr) = undefined,
+
+    pub fn create(allocator: std.mem.Allocator, em: *ExprManager) *Self {
+        const self = allocator.create(Self) catch oom();
         self.* = .{ .arena = .init(allocator),
             .em = em, .lm = em.lm, .whnf_cache = undefined };
         self.whnf_cache = .{ .init(self.arena.allocator()), .init(self.arena.allocator()) };
+
+        self.bvar_ctx = .init(self.arena.allocator());
+        self.get_args_buf = .init(self.arena.allocator());
         return self;
     }
 
-    pub fn deinit(self: *TypeChecker) void {
+    pub fn destroy(self: *Self) void {
+        const allocator = self.arena.child_allocator;
         self.arena.deinit();
-        self.deinit();
+        allocator.destroy(self);
     }
 
-    // pub fn infer_core(e: Expr, check: bool) Expr {
-    //     return e;
-    // }
+    /// Return weak head normal form, 'core' variant - here only beta reduction
+    pub fn whnf_core(self: *Self, e: Expr) Expr {
+        const em = self.em;
+        if (!em.isLambda(e)) return e;
+        if (self.whnf_cache[0].get(e)) |whnf_e| return whnf_e;
+
+        // self.get_args_buf.clear();
+        // var f = em.getAppArgsRev(e, &self.get_args_buf);
+        // if (em.isLambda(f)) {
+        //     // ToDo
+        // }
+
+        // self.whnf_cache[0].put(e, whnf_e);
+    }
 
 };

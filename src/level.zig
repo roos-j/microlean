@@ -51,6 +51,12 @@ pub const LevelManager = struct {
         return self;
     }
 
+    pub fn destroy(self: *Self) void {
+        self.nodes.deinit(self.allocator);
+        self.hash_map.deinit();
+        self.allocator.destroy(self);
+    }
+
     fn initZeroOne(self: *Self) void {
         const zero: LevelNode = .{ .content = .zero, .depth = 0, .has_param = false, .offset = 0, .offset_base = 0, .is_explicit = true };
         const one: LevelNode = .{ .content = .{ .succ = 0 }, .depth = 1, .has_param = false, .offset = 1, .offset_base = 0, .is_explicit = true };
