@@ -1,14 +1,40 @@
 const std = @import("std");
+const Buffer = @import("src/common.zig").Buffer;
 const LevelManager = @import("src/level.zig").LevelManager;
+const Expr = @import("src/expr.zig").Expr;
 const ExprManager = @import("src/expr.zig").ExprManager;
 const ExprStore = @import("src/expr.zig").ExprStore;
 
-test "LevelTest" {
-    var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
+const TestCtx = struct {
+    const Self = @This();
 
-    const mgr = LevelManager.create(allocator);
+    allocator: std.mem.Allocator,
+    lm: *LevelManager,
+    em: *ExprManager,
+    gs: *ExprStore,
+
+    pub fn init() Self {
+        const allocator = std.testing.allocator;
+        const lm = LevelManager.create(allocator);
+        const em = ExprManager.create(allocator, lm);
+        return .{
+            .allocator = allocator,
+            .lm = lm,
+            .em = em,
+            .gs = em.getGlobalStore()
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.em.destroy();
+        self.lm.destroy();
+    }
+};
+
+test "LevelTest" {
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    const mgr = ctx.lm;
 
     const zero = mgr.mkZero();
     const one = mgr.mkOne();
@@ -53,13 +79,11 @@ test "LevelTest" {
 }
 
 test "ExprTest" {
-    var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    const lm = LevelManager.create(allocator);
-    const em = ExprManager.create(allocator, lm);
-    const es = em.getGlobalStore();
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    const lm = ctx.lm;
+    const em = ctx.em;
+    const es = ctx.gs;
 
     const u = lm.mkParam(0);
 
@@ -69,16 +93,16 @@ test "ExprTest" {
 
     try std.testing.expect(!em.hasLevelParam(Prop));
     try std.testing.expect(em.hasLevelParam(Sortu));
-    try std.testing.expect(em.getKind(Type) == .sort);
+    try std.testing.expect(em.kind(Type) == .sort);
 
     const nf = 1;
     const f = es.mkConst(nf, &.{});
-    try std.testing.expect(em.getKind(f) == .cnst);
+    try std.testing.expect(em.kind(f) == .cnst);
     // lam x : Sort u => x
     const e_id = es.mkLambda(nf, Sortu, es.mkBvar(0));
     try std.testing.expect(em.hasLevelParam(e_id));
     try std.testing.expect(em.getLooseBvarRange(e_id) == 0);
-    try std.testing.expect(em.getKind(e_id) == .lambda);
+    try std.testing.expect(em.kind(e_id) == .lambda);
 
     const e_loose = es.mkApp(f,es.mkBvar(0));
     try std.testing.expect(em.getLooseBvarRange(e_loose) == 1);
@@ -104,5 +128,65 @@ test "ExprTest" {
         try std.testing.expect(em.getApproxDepth(e_deep) == @min(current_depth, 255)); 
         e_deep = es.mkApp(f, e_deep);
         current_depth += 1;
+    }
+}
+
+test "ExprStore" {
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    const em = ctx.em;
+    const gs = ctx.gs;
+
+    try std.testing.expect(gs.storeId == 0);
+
+    const e = gs.mkSort(0);
+    try std.testing.expect(e.storeId == 0);
+
+    const store1 = em.createStore();
+    try std.testing.expect(store1.storeId == 1);
+
+    const store2 = em.createStore();
+    try std.testing.expect(store2.storeId == 2);
+    try std.testing.expect(store2.isOpen);
+    
+    const e1 = store2.mkConst(0, &.{});
+    try std.testing.expect(e1.storeId == 2);
+    const e2 = store2.mkApp(e, e1);
+    try std.testing.expect(e2.storeId == 2);
+    try std.testing.expect(store2.nodes.items.len == 2);
+    try std.testing.expect(store2.hashMap.count() == 2);
+
+    em.closeStore(store2.storeId);
+    try std.testing.expect(!store2.isOpen);
+    try std.testing.expect(store2.nodes.items.len == 0);
+    try std.testing.expect(store2.hashMap.count() == 0);
+
+    const store3 = em.createStore();
+    try std.testing.expect(store3.storeId == 2);
+    try std.testing.expect(store2 == store3);
+    const e3 = store2.mkApp(e, e);
+    try std.testing.expect(e3.storeId == 2);
+}
+
+test "Expr.getAppArgsRev" {
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    const s = ctx.gs;
+    const f = s.mkConst(0, &.{});
+    const args: [3]Expr = .{
+        s.mkConst(1, &.{}),
+        s.mkConst(2, &.{}),
+        s.mkConst(3, &.{})
+    };
+    
+    const e = s.mkApp(s.mkApp(s.mkApp(f, args[0]), args[1]), args[2]);
+    var revargs = Buffer(Expr).init(ctx.allocator);
+    defer revargs.deinit();
+
+    const head = ctx.em.getAppArgsRev(e, &revargs);
+    try std.testing.expect(head == f);
+    try std.testing.expect(revargs.len() == 3);
+    for (0..2) |i| {
+        try std.testing.expect(revargs.get(i) == args[2-i]);
     }
 }
