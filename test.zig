@@ -79,6 +79,8 @@ test "LevelTest" {
 }
 
 test "ExprTest" {
+    try std.testing.expect(@bitSizeOf(Expr) == 64);
+
     var ctx = TestCtx.init();
     defer ctx.deinit();
     const lm = ctx.lm;
@@ -91,32 +93,36 @@ test "ExprTest" {
     const Type = es.mkSort(1);
     const Sortu = es.mkSort(u);
 
-    try std.testing.expect(!em.hasLevelParam(Prop));
-    try std.testing.expect(em.hasLevelParam(Sortu));
-    try std.testing.expect(em.kind(Type) == .sort);
+    try std.testing.expect(!Prop.hasLevelParam());
+    try std.testing.expect(Sortu.hasLevelParam());
+    try std.testing.expect(Type.isSort());
 
     const nf = 1;
     const f = es.mkConst(nf, &.{});
-    try std.testing.expect(em.kind(f) == .cnst);
+    try std.testing.expect(f.isImmediate());
+    try std.testing.expect(f.isConst());
     // lam x : Sort u => x
     const e_id = es.mkLambda(nf, Sortu, es.mkBvar(0));
-    try std.testing.expect(em.hasLevelParam(e_id));
+    try std.testing.expect(!e_id.isImmediate());
+    try std.testing.expect(e_id.hasLevelParam());
     try std.testing.expect(em.getLooseBvarRange(e_id) == 0);
-    try std.testing.expect(em.kind(e_id) == .lambda);
+    try std.testing.expect(e_id.isLambda());
 
     const e_loose = es.mkApp(f,es.mkBvar(0));
+    try std.testing.expect(e_loose.isApp());
     try std.testing.expect(em.getLooseBvarRange(e_loose) == 1);
 
     // Type -> Prop
     const nP = 2;
     const e_tp = es.mkForallE(nP, Type, Prop);
+    try std.testing.expect(e_tp.isPi());
     try std.testing.expect(em.getApproxDepth(e_tp) == 1);
-    try std.testing.expect(!em.hasLevelParam(e_tp));
+    try std.testing.expect(!e_tp.hasLevelParam());
     try std.testing.expect(em.getLooseBvarRange(e_tp) == 0);
 
     const e_nonsense = es.mkForallE(nf, es.mkBvar(1), es.mkApp(es.mkConst(nP, &.{u, 0}), e_tp));
     try std.testing.expect(em.getApproxDepth(e_nonsense) == 3);
-    try std.testing.expect(em.hasLevelParam(e_nonsense));
+    try std.testing.expect(e_nonsense.hasLevelParam());
     try std.testing.expect(em.getLooseBvarRange(e_nonsense) == 2);
 
     const nx = 3;
@@ -140,7 +146,7 @@ test "ExprStore" {
     try std.testing.expect(gs.storeId == 0);
 
     const e = gs.mkSort(0);
-    try std.testing.expect(e.storeId == 0);
+    try std.testing.expect(e.storeId() == 0);
 
     const store1 = em.createStore();
     try std.testing.expect(store1.storeId == 1);
@@ -150,11 +156,11 @@ test "ExprStore" {
     try std.testing.expect(store2.isOpen);
     
     const e1 = store2.mkConst(0, &.{});
-    try std.testing.expect(e1.storeId == 2);
+    try std.testing.expect(e1.storeId() == 2);
     const e2 = store2.mkApp(e, e1);
-    try std.testing.expect(e2.storeId == 2);
-    try std.testing.expect(store2.nodes.items.len == 2);
-    try std.testing.expect(store2.hashMap.count() == 2);
+    try std.testing.expect(e2.storeId() == 2);
+    try std.testing.expect(store2.nodes.items.len == 1);
+    try std.testing.expect(store2.hashMap.count() == 1);
 
     em.closeStore(store2.storeId);
     try std.testing.expect(!store2.isOpen);
@@ -165,7 +171,7 @@ test "ExprStore" {
     try std.testing.expect(store3.storeId == 2);
     try std.testing.expect(store2 == store3);
     const e3 = store2.mkApp(e, e);
-    try std.testing.expect(e3.storeId == 2);
+    try std.testing.expect(e3.storeId() == 2);
 }
 
 test "Expr.getAppArgsRev" {
@@ -191,14 +197,6 @@ test "Expr.getAppArgsRev" {
     }
 }
 
-
-fn replace_test_f (s: *ExprStore, sube: Expr, offset: u32) ?Expr {
-    return switch (s.em.getNode(sube).content) {
-        .bvar => |idx| s.mkBvar(idx + offset),
-        else => null
-    };
-}
-
 test "ExprStore.replace" {
     var ctx = TestCtx.init();
     defer ctx.deinit();
@@ -209,22 +207,23 @@ test "ExprStore.replace" {
 
     const replace_bvars = struct {
         fn call (store: *ExprStore, sube: Expr, offset: u32) ?Expr {
-            return switch (store.em.getNode(sube).content) {
-                .bvar => |idx| store.mkBvar(idx + offset),
-                else => null
-            };
+            if (sube.isBvar()) {
+                return store.mkBvar(sube.bvarId() + offset);
+            } else {
+                return null;
+            }
         }
     }.call;
     const new_e = s.replace(e, replace_bvars);
 
     const app_fun = em.getApp(new_e).fun;
 
-    try std.testing.expect(em.isBvar(app_fun));
-    try std.testing.expect(em.getNode(app_fun).content.bvar == 0);
+    try std.testing.expect(app_fun.isBvar());
+    try std.testing.expect(app_fun.bvarId() == 0);
     
     const app_arg = em.getApp(new_e).arg;
-    try std.testing.expect(em.isLambda(app_arg));
+    try std.testing.expect(app_arg.isLambda());
     const lambda_body = em.getLambda(app_arg).body;
-    try std.testing.expect(em.isBvar(lambda_body));
-    try std.testing.expect(em.getNode(lambda_body).content.bvar == 2);
+    try std.testing.expect(lambda_body.isBvar());
+    try std.testing.expect(lambda_body.bvarId() == 2);
 }

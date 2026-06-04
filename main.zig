@@ -2,30 +2,33 @@ const std = @import("std");
 
 const LevelManager = @import("src/level.zig").LevelManager;
 
+const E = @import("src/expr.zig");
+
 pub fn main() !void {
     var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var mgr: LevelManager = try LevelManager.init(allocator);
+    const lm: *LevelManager = .create(allocator);
+    const em: *E.ExprManager = .create(allocator, lm);
+    std.debug.assert(em.globalStore.isOpen);
 
-    // const lvl_zero = mgr.store.get(@intCast(0));
-    // std.debug.print("{s}\n", .{@tagName(std.meta.activeTag(lvl_zero))});
-    // const lvl_one = mgr.store.get(@intCast(1));
-    // std.debug.print("{s}\n", .{@tagName(std.meta.activeTag(lvl_one))});
-    mgr.printLevel(0);
-    std.debug.print("\n", .{});
-    mgr.printLevel(1);
-    std.debug.print("\n", .{});
-    const lvl_succ = mgr.mkSucc(1);
-    const lvl_max = mgr.mkMax(lvl_succ, 1);
-    mgr.printLevel(lvl_max);
-    std.debug.print("\n", .{});
-    const lvl_test = mgr.mkMax(mgr.mkSucc(mgr.mkSucc(mgr.mkSucc(mgr.mkParam(0)))), lvl_max);
-    mgr.printLevel(lvl_test);
-    std.debug.print("\n", .{});
+    std.debug.print("bitSizeOf ExprKind={d}\n", .{@bitSizeOf(E.ExprKind)});
+    std.debug.print("sizeOf ExprKind={d}\n", .{@sizeOf(E.ExprKind)});
 
-    mgr.printAllNodes();
-    std.debug.assert(!mgr.equal(0, 1));
-    std.debug.assert(mgr.equal(2, 2));
+    // const K = enum(u3) { a0, a1, a2, a3, a4, a5 };
+
+    const A = packed struct {
+        id: u32,
+
+        k: E.ExprKind,
+        _reserved: u4,
+
+        _reserved2: u8,
+
+        storeId: u16
+    };
+
+    std.debug.assert(@bitSizeOf(A) == 64);
+
 }

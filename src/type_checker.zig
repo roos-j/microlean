@@ -39,14 +39,14 @@ pub const TypeChecker = struct {
 
     /// Return weak head normal form, 'core' variant - here only beta reduction
     pub fn whnf_core(self: *Self, e: Expr) Expr {
-        const em = self.em;
-        if (!em.isLambda(e)) return e;
+        // const em = self.em;
+        if (!e.isLambda()) return e;
         if (self.whnf_cache[0].get(e)) |whnf_e| return whnf_e;
 
-        var whnf_e: Expr = undefined;
+        const whnf_e: Expr = undefined;
         self.get_args_buf.clear();
         //var f = em.getAppArgsRev(e, &self.get_args_buf);
-        // if (em.isLambda(f)) { // Beta reduction
+        // if (f.isLambda()) { // Beta reduction
         //     // Todo
         // } else { // Cannot beta reduce, so nothing to do
         //     whnf_e = e;

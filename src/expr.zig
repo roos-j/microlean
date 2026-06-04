@@ -7,20 +7,84 @@ const Level = @import("level.zig").Level;
 const LevelManager = @import("level.zig").LevelManager;
 
 pub const ExprIdx = u32;
-pub const ExprStoreId = u32;
+pub const ExprStoreId = u16;
 
-// ToDo: 16 bits will be more than enough for storeId (maybe even 8), so we have 16 bits left for meta info!
-// Use this to store ExprKind and think what else might give good value. Encode bvar, sort as immediates, don't cache
+pub const ExprImmData = packed union {
+    idx: ExprIdx, // for non-immediates. Index to store's ExprNode array
+    bvarId: Idx,
+    lvl: Level,
+    name: Name
+};
+
 pub const Expr = packed struct {
-    idx: ExprIdx, // Index to an array
-    storeId: ExprStoreId = 0 // Store id, typically points to an Array
+    data: ExprImmData, // 32 bit. Index to the store's ExprNode array
+    
+    _kind: ExprKind, // 4 bit
+    _has_level_param: bool,
+    _reserved: u11 = 0,
+
+    _storeId: ExprStoreId = 0, // 16 bit, only used for non-immediates
+
+    pub inline fn kind(e: Expr) ExprKind { return e._kind; }
+    pub inline fn isBvar(e: Expr) bool { return e.kind() == .bvar; }
+    pub inline fn isSort(e: Expr) bool { return e.kind() == .sort; }
+    pub inline fn isConst(e: Expr) bool { return e.kind() == .cnst; }
+    pub inline fn isApp(e: Expr) bool { return e.kind() == .app; }
+    pub inline fn isLambda(e: Expr) bool { return e.kind() == .lambda; }
+    pub inline fn isPi(e: Expr) bool { return e.kind() == .forallE; }
+    pub inline fn hasLevelParam(e: Expr) bool { return e._has_level_param; }
+
+    /// Immediates are completely encoded in `Expr`, non-immediates have an associated `ExprNode` which is cached
+    pub inline fn isImmediate(e: Expr) bool {
+        return e.isBvar() or e.isSort() or (e.isConst() and !e.hasLevelParam());
+    }
+
+    pub inline fn isAtomic(e: Expr) bool {
+        return switch (e.kind()) {
+            .bvar, .sort, .cnst => true,
+            else => false
+        };
+    }
+
+    pub inline fn idx(e: Expr) ExprIdx {
+        std.debug.assert(!e.isImmediate());
+        return e.data.idx;
+    }
+
+    pub inline fn storeId(e: Expr) ExprStoreId {
+        return e._storeId;
+    }
+
+    pub inline fn bvarId(e: Expr) Idx {
+        std.debug.assert(e.isBvar());
+        return e.data.bvarId;
+    }
+
+    pub inline fn level(e: Expr) Level {
+        std.debug.assert(e.isSort());
+        return e.data.lvl;
+    }
+
+    pub inline fn declName(e: Expr) Name {
+        std.debug.assert(e.isConst());
+        return e.data.name;
+    }
+
+    pub inline fn getBvarRange(e: Expr) Idx {
+        std.debug.assert(e.isImmediate());
+        switch (e.kind()) {
+            .bvar => return e.bvarId() + 1,
+            .sort, .cnst => return 0,
+            else => unreachable
+        }
+    }
 };
 
 pub const Idx = u32;
 
 // A subset of Lean's Expr kinds, note `const` is a reserved keyword, so we use `cnst`
 // Missing: fvar, mvar, letE, lit, mdata, proj
-pub const ExprKind = enum { bvar, sort, cnst, app, lambda, forallE };
+pub const ExprKind = enum(u4) { bvar, sort, cnst, app, lambda, forallE };
 
 // Constant with universe levels
 pub const ExprConst = struct {
@@ -56,16 +120,12 @@ pub const ExprForallE = struct {
 
 // ToDo: Make this more memory efficient; the different kinds have different sizes
 pub const ExprContent = union(ExprKind) {
-    bvar: Idx,
-    sort: Level,
+    bvar: Idx, // ToDo: now stored in Expr directly, but we still use the tag of this union
+    sort: Level, // Same
     cnst: ExprConst,
     app: ExprApp,
     lambda: ExprLambda,
     forallE: ExprForallE,
-
-    pub inline fn kind(self: ExprContent) ExprKind {
-        return std.meta.activeTag(self);
-    }
 
     pub fn hash(self: ExprContent) u64 {
         var h = std.hash.Wyhash.init(0);
@@ -77,7 +137,7 @@ pub const ExprContent = union(ExprKind) {
                     std.hash.autoHash(&h, u);
                 }
             },
-            .bvar, .sort => |a| { std.hash.autoHash(&h, a); },
+            .bvar, .sort => unreachable, //|a| { std.hash.autoHash(&h, a); },
             .app => |a| { std.hash.autoHash(&h, a); },
             .lambda => |a| { std.hash.autoHash(&h, a); },
             .forallE => |a| { std.hash.autoHash(&h, a); }
@@ -88,6 +148,10 @@ pub const ExprContent = union(ExprKind) {
     pub fn hash32(self: ExprContent) u32 {
         return @truncate(self.hash());
     }
+
+    pub fn kind(content: ExprContent) ExprKind {
+        return std.meta.activeTag(content);
+    }
 };
 
 /// Computed Expr meta data
@@ -96,13 +160,14 @@ pub const ExprData = packed struct {
     hash: u32, // Lower 32bit of hash
     approx_depth: u8,
     _reserved: u3 = 0, // unimplemented Lean 4 features
-    has_level_param: bool,
+    has_level_param: bool, // Stored in `Expr` but still needed here for cached Expr's
     loose_bvar_range: u20, // max. de Brujin index + 1
 
     inline fn checkBvarRange(range: u32) void {
         if (range > std.math.maxInt(u20)) @panic("too many bound variables");
     }
 
+    // Obsolete now?
     fn mkBvar(content: ExprContent) ExprData {
         const range = content.bvar + 1;
         checkBvarRange(range);
@@ -112,6 +177,7 @@ pub const ExprData = packed struct {
             .loose_bvar_range = @intCast(range) };
     }
 
+    // Obsolete now?
     fn mkSort(content: ExprContent, lm: *const LevelManager) ExprData {
         return .{ .hash = undefined,
             .approx_depth = 0,
@@ -141,7 +207,7 @@ pub const ExprData = packed struct {
     fn mkApp(content: ExprContent, em: *const ExprManager) ExprData {
         const depth = @max(incDepth(em.getApproxDepth(content.app.fun)),
             incDepth(em.getApproxDepth(content.app.arg)));
-        const has_param = em.hasLevelParam(content.app.fun) or em.hasLevelParam(content.app.arg);
+        const has_param = content.app.fun.hasLevelParam() or content.app.arg.hasLevelParam();
         const range = @max(em.getLooseBvarRange(content.app.fun), em.getLooseBvarRange(content.app.arg));
         return .{ .hash = undefined,
             .approx_depth = depth,
@@ -152,7 +218,7 @@ pub const ExprData = packed struct {
     // lambda or forallE
     fn mkBinder(binderType: Expr, body: Expr, em: *const ExprManager) ExprData {
         const depth = @max(incDepth(em.getApproxDepth(binderType)), incDepth(em.getApproxDepth(body)));
-        const has_param = em.hasLevelParam(binderType) or em.hasLevelParam(body);
+        const has_param = binderType.hasLevelParam() or body.hasLevelParam();
         const range = @max(em.getLooseBvarRange(binderType), em.getLooseBvarRange(body) -| 1);
         return .{ .hash = undefined,
             .approx_depth = depth,
@@ -169,9 +235,6 @@ pub const ExprData = packed struct {
     }
 };
 
-// ToDo later: optimize size
-// bvar, const can be immediate / encode in Expr handle
-// Exploit different node sizes for different kinds
 pub const ExprNode = struct {
     content: ExprContent, // logical content
     data: ExprData, // computed meta data
@@ -179,8 +242,8 @@ pub const ExprNode = struct {
     // Does not compute hash
     pub fn init(content: ExprContent, em: *const ExprManager) ExprNode {
         const data: ExprData = switch (content) {
-            .bvar => .mkBvar(content),
-            .sort => .mkSort(content, em.lm),
+            .bvar => unreachable, //.mkBvar(content), // obsolete?
+            .sort => unreachable, //.mkSort(content, em.lm), // obsolete?
             .cnst => .mkConst(content, em.lm),
             .app => .mkApp(content, em),
             .lambda => .mkLambda(content, em),
@@ -248,6 +311,9 @@ pub const ExprManager = struct {
     /// Obtain a fresh ExprStore, creating a new one if necessary. Use this for temporary ExprStores
     pub fn createStore(self: *Self) *ExprStore {
         std.debug.assert(self.stores.items.len > 0); // Check if global store was initialized
+        if (self.stores.items.len >= std.math.maxInt(ExprStoreId)) {
+            @panic("maximum number of stores can't be exceeded.");
+        }
         // Check if there is a previously closed store available
         var storeId: ?ExprStoreId = null;
         for (self.stores.items, 0..) |store, i| {
@@ -282,77 +348,64 @@ pub const ExprManager = struct {
     }
 
     pub fn getNode(self: *const Self, e: Expr) ExprNode {
-        std.debug.assert(e.storeId < self.stores.items.len);
-        return self.stores.items[e.storeId].getNode(e);
+        std.debug.assert(!e.isImmediate());
+        std.debug.assert(e.storeId() < self.stores.items.len);
+        return self.stores.items[e.storeId()].getNode(e);
     }
 
     pub inline fn getApproxDepth(self: *const Self, e: Expr) u8 {
+        if (e.isAtomic()) return 0;
         return self.getNode(e).data.approx_depth;
     }
 
-    pub inline fn hasLevelParam(self: *const Self, e: Expr) bool {
-        return self.getNode(e).data.has_level_param;
-    }
+    // pub inline fn hasLevelParam(self: *const Self, e: Expr) bool {
+    //     return self.getNode(e).data.has_level_param;
+    // }
 
     pub inline fn getLooseBvarRange(self: *const Self, e: Expr) u32 {
-        return self.getNode(e).data.loose_bvar_range;
+        if (e.isImmediate()) {
+            return e.getBvarRange();
+        } else {
+            return self.getNode(e).data.loose_bvar_range;
+        }
     }
 
     pub inline fn getHash32(self: *const Self, e: Expr) u32 {
+        std.debug.assert(!e.isImmediate()); // can still get a hash for imm, but shouldn't be needed
         return self.getNode(e).data.hash;
     }
 
-    pub inline fn kind(self: *const Self, e: Expr) ExprKind {
-        return self.getNode(e).content.kind();
+    pub inline fn getConstName(self: *const Self, e: Expr) Name {
+        std.debug.assert(e.isConst());
+        if (e.isImmediate()) return e.declName();
+        return self.getNode(e).content.cnst.declName;
     }
 
-    pub inline fn isBvar(self: *const Self, e: Expr) bool {
-        return self.kind(e) == .bvar;
-    }
-
-    pub inline fn isSort(self: *const Self, e: Expr) bool {
-        return self.kind(e) == .sort;
-    }
-
-    pub inline fn isConst(self: *const Self, e: Expr) bool {
-        return self.kind(e) == .cnst;
-    }
-
-    pub inline fn isApp(self: *const Self, e: Expr) bool {
-        return self.kind(e) == .app;
-    }
-
-    pub inline fn isLambda(self: *const Self, e: Expr) bool {
-        return self.kind(e) == .lambda;
-    }
-
-    pub inline fn isPi(self: *const Self, e: Expr) bool {
-        return self.kind(e) == .forallE;
-    }
-
-    pub inline fn isAtomic(self: *const Self, e: Expr) bool {
-        return switch (self.kind(e)) {
-            .bvar, .sort, .cnst => true,
-            else => false
-        };
+    pub inline fn getConst(self: *const Self, e: Expr) ExprConst {
+        std.debug.assert(e.isConst());
+        if (e.isImmediate()) return .{ .declName = e.declName(), .us = &.{} };
+        return self.getNode(e).content.cnst;
     }
 
     pub inline fn getLambda(self: *const Self, e: Expr) ExprLambda {
+        std.debug.assert(e.isLambda());
         return self.getNode(e).content.lambda;
     }
 
     pub inline fn getPi(self: *const Self, e: Expr) ExprForallE {
+        std.debug.assert(e.isPi());
         return self.getNode(e).content.forallE;
     }
 
     pub inline fn getApp(self: *const Self, e: Expr) ExprApp {
+        std.debug.assert(e.isApp());
         return self.getNode(e).content.app;
     }
 
     /// Unwrap function applications, store arguments in reversed order and return head function
     pub fn getAppArgsRev(self: *const Self, e: Expr, args: *Buffer(Expr)) Expr {
         var curr = e;
-        while (self.isApp(curr)) {
+        while (curr.isApp()) {
             args.append(self.getApp(curr).arg);
             curr = self.getApp(curr).fun;
         }
@@ -409,16 +462,24 @@ pub const ExprStore = struct {
 
     fn cache(self: *Self, content: ExprContent) Expr {
         if (comptime builtin.mode == .Debug) self.enforceNoCrossStoreReference(content);
+        const kind = content.kind();
         const result = self.hashMap.getOrPut(content) catch oom();
         if (result.found_existing) {
-            return .{ .storeId = self.storeId, .idx = result.value_ptr.* };
+            const id: ExprIdx = result.value_ptr.*;
+            const has_level_param = self.nodes.items[id].data.has_level_param;
+            return .{ ._storeId = self.storeId, 
+                 ._kind = kind,
+                 ._has_level_param = has_level_param,    
+                .data = .{ .idx = id } };
         }
         const new_id: ExprIdx = @intCast(self.nodes.items.len);
         result.value_ptr.* = new_id;
         var node: ExprNode = .init(content, self.em);
         node.data.hash = content.hash32(); // could avoid double hash call, but probably not important
         self.nodes.append(self.arena.allocator(), node) catch oom();
-        return .{ .storeId = self.storeId, .idx = new_id };       
+        return .{ ._kind = kind, ._storeId = self.storeId, 
+            ._has_level_param = node.data.has_level_param,
+            .data = .{ .idx = new_id } };       
     }
 
     /// An Expr cannot reference another store other than the current one or global store.
@@ -441,7 +502,7 @@ pub const ExprStore = struct {
     }
 
     fn storeIdAllowed(self: *const Self, e: Expr) bool {
-        return e.storeId == 0 or self.storeId == e.storeId;
+        return e.storeId() == 0 or self.storeId == e.storeId();
     }
 
     /// Clear all data in the store, but retaining memory capacity for efficiency
@@ -453,23 +514,45 @@ pub const ExprStore = struct {
     }
 
     pub fn getNode(self: *const Self, e: Expr) ExprNode {
-        std.debug.assert(e.storeId == self.storeId);
+        std.debug.assert(!e.isImmediate());
+        std.debug.assert(e.storeId() == self.storeId);
         std.debug.assert(self.isOpen);
-        return self.nodes.items[e.idx];
+        return self.nodes.items[e.idx()];
     }
 
+    /// Make a bound variable.
+    /// `bvar` is immediate and doesn't actually require the store, but we still keep track of storeId
     pub fn mkBvar(self: *Self, idx: Idx) Expr {
         std.debug.assert(self.isOpen);
-        return self.cache(.{ .bvar = idx });
+        return .{ ._kind = .bvar, 
+            ._has_level_param = false, 
+            .data = .{.bvarId = idx},
+            ._storeId = self.storeId };
+        //return self.cache(.{ .bvar = idx });
     }
 
     pub fn mkSort(self: *Self, lvl: Level) Expr {
         std.debug.assert(self.isOpen);
-        return self.cache(.{ .sort = lvl });
+        const has_param = self.lm.hasParam(lvl);
+        return .{ ._kind = .sort, 
+            ._has_level_param = has_param, 
+            .data = .{.lvl = lvl}, 
+            ._storeId = self.storeId };
+        // return self.cache(.{ .sort = lvl });
+    }
+
+    /// Make a `const` without level parameters
+    pub fn mkFreeConst(self: *Self, declName: Name) Expr {
+        std.debug.assert(self.isOpen);
+        return .{ ._kind = .cnst, 
+            ._has_level_param = false, 
+            .data = .{ .name = declName }, 
+            ._storeId = self.storeId };
     }
 
     pub fn mkConst(self: *Self, declName: Name, us: []const Level) Expr {
         std.debug.assert(self.isOpen);
+        if (us.len == 0) return self.mkFreeConst(declName);
         // ToDo: This is potentially very inefficient for now, memcpy even happens before cache
         // Use a builder pattern or similar later
         const local_us = self.arena.allocator().dupe(Level, us) catch oom();
@@ -526,8 +609,9 @@ pub const ExprStore = struct {
         if (subst) |new_e| {
             return new_e;
         }
+        if (e.isAtomic()) return e;
         switch (em.getNode(e).content) {
-            .bvar, .sort, .cnst => return e,
+            .bvar, .sort, .cnst => unreachable,
             .app => |app| {
                 const newfun = self.replace_rec(app.fun, f, offset);
                 const newarg = self.replace_rec(app.arg, f, offset);

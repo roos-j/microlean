@@ -4,7 +4,7 @@ const Buffer = @import("common.zig").Buffer;
 const oom = @import("common.zig").oom;
 
 // Universe level
-pub const Level = u32;
+pub const Level = u32; // 28 bits so that Expr fits in 64 bits
 
 pub const LevelMax = struct { lhs: Level, rhs: Level };
 
@@ -73,6 +73,9 @@ pub const LevelManager = struct {
         const result = self.hash_map.getOrPut(content) catch oom();
         if (result.found_existing) {
             return result;
+        }
+        if (self.nodes.items.len >= std.math.maxInt(Level)) {
+            @panic("maximum number of stored universe levels exceeded");
         }
         const new_id: Level = @intCast(self.nodes.items.len);
         result.value_ptr.* = new_id;
