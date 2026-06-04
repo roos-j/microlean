@@ -9,6 +9,8 @@ const LevelManager = @import("level.zig").LevelManager;
 pub const ExprIdx = u32;
 pub const ExprStoreId = u32;
 
+// ToDo: 16 bits will be more than enough for storeId (maybe even 8), so we have 16 bits left for meta info!
+// Use this to store ExprKind and think what else might give good value. Encode bvar, sort as immediates, don't cache
 pub const Expr = packed struct {
     idx: ExprIdx, // Index to an array
     storeId: ExprStoreId = 0 // Store id, typically points to an Array
@@ -52,6 +54,7 @@ pub const ExprForallE = struct {
     binderInfo: BinderInfo = .default
 };
 
+// ToDo: Make this more memory efficient; the different kinds have different sizes
 pub const ExprContent = union(ExprKind) {
     bvar: Idx,
     sort: Level,
@@ -87,12 +90,12 @@ pub const ExprContent = union(ExprKind) {
     }
 };
 
-// Computed Expr meta data
-// same 64bit layout as in Lean 4 kernel
+/// Computed Expr meta data
 pub const ExprData = packed struct {
+    // same 64bit layout as in Lean 4 kernel
     hash: u32, // Lower 32bit of hash
     approx_depth: u8,
-    _reserved: u3 = 0,
+    _reserved: u3 = 0, // unimplemented Lean 4 features
     has_level_param: bool,
     loose_bvar_range: u20, // max. de Brujin index + 1
 
@@ -334,6 +337,14 @@ pub const ExprManager = struct {
         };
     }
 
+    pub inline fn getLambda(self: *const Self, e: Expr) ExprLambda {
+        return self.getNode(e).content.lambda;
+    }
+
+    pub inline fn getPi(self: *const Self, e: Expr) ExprForallE {
+        return self.getNode(e).content.forallE;
+    }
+
     pub inline fn getApp(self: *const Self, e: Expr) ExprApp {
         return self.getNode(e).content.app;
     }
@@ -410,7 +421,7 @@ pub const ExprStore = struct {
         return .{ .storeId = self.storeId, .idx = new_id };       
     }
 
-    /// An Expr cannot reference another store other than the global store.
+    /// An Expr cannot reference another store other than the current one or global store.
     fn enforceNoCrossStoreReference(self: *const Self, content: ExprContent) void {
         switch (content) {
             .bvar, .sort, .cnst => return,
@@ -478,5 +489,66 @@ pub const ExprStore = struct {
     pub fn mkForallE(self: *Self, binderName: Name, binderType: Expr, body: Expr) Expr {
       std.debug.assert(self.isOpen);
       return self.cache(.{ .forallE = .{ .binderName = binderName, .binderType = binderType, .body = body } });
+    }
+
+    /// Make a function application with multiple arguments in forward order: (f args[0]) args[1] ..
+    pub fn mkAppArgs(self: *Self, f: Expr, args: []const Expr) Expr {
+        var e = f;
+        for (args) |arg| {
+            e = self.mkApp(e, arg);
+        }
+        return e;
+    }
+
+    /// Make a function application with multiple arguments in reverse order: (f args[n-1]) args[n-2] ..
+    pub fn mkAppArgsRev(self: *Self, f: Expr, args: []const Expr) Expr {
+        var e = f;
+        const n = args.len;
+        for (0..n) |i| {
+            const revi = n - 1 - i;
+            e = self.mkApp(e, args[revi]);
+        }
+        return e;
+    }
+
+    /// Recursively visit all subexpressions and apply `f` to them.
+    /// If `f` provides an Expr, then replace the current subexpression. Substituted expressions are not traversed further.
+    /// `f` takes the current subexpression and the number of binders it is contained in relative to the top level expression.
+    /// Return the resulting full expression.
+    pub fn replace(self: *Self, e: Expr, f: fn (*ExprStore, Expr, u32) ?Expr) Expr {
+        return self.replace_rec(e, f, 0);
+    }
+
+    // ToDo: make this go through a cache for fixed f. Key is (e,offset) and output is result
+    fn replace_rec(self: *Self, e: Expr, f: fn (*ExprStore, Expr, u32) ?Expr, offset: u32) Expr {
+        const em = self.em;
+        const subst = f(self, e, offset);
+        if (subst) |new_e| {
+            return new_e;
+        }
+        switch (em.getNode(e).content) {
+            .bvar, .sort, .cnst => return e,
+            .app => |app| {
+                const newfun = self.replace_rec(app.fun, f, offset);
+                const newarg = self.replace_rec(app.arg, f, offset);
+                if (newfun == app.fun and newarg == app.arg) return e;
+                const new_e = self.mkApp(newfun, newarg);
+                return new_e;
+            },
+            .lambda => |lam| {
+                const newtype = self.replace_rec(lam.binderType, f, offset);
+                const newbody = self.replace_rec(lam.body, f, offset + 1);
+                if (newtype == lam.binderType and newbody == lam.body) return e;
+                const new_e = self.mkLambda(lam.binderName, newtype, newbody);
+                return new_e;
+            },
+            .forallE => |pi| {
+                const newtype = self.replace_rec(pi.binderType, f, offset);
+                const newbody = self.replace_rec(pi.body, f, offset + 1);
+                if (newtype == pi.binderType and newbody == pi.body) return e;
+                const new_e = self.mkForallE(pi.binderName, newtype, newbody);
+                return new_e;
+            }
+        }
     }
 };

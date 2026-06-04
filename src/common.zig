@@ -45,5 +45,9 @@ pub fn Buffer(comptime T: type) type {
         pub fn get(self: *const Self, i: usize) T {
             return self.list.items[i];
         }
+
+        pub fn items(self: *const Self) []T {
+            return self.list.items;
+        }
     };
 }

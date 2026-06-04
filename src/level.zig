@@ -1,5 +1,6 @@
 const std = @import("std");
 const Name = @import("common.zig").Name;
+const Buffer = @import("common.zig").Buffer;
 const oom = @import("common.zig").oom;
 
 // Universe level
@@ -230,6 +231,16 @@ pub const LevelManager = struct {
         std.debug.assert(self.getOffset(l1) == self.getOffset(l2));
         if (self.getOffsetBaseKind(l1) == .param and self.getOffsetBaseKind(l2) == .param) return self.getOffsetBase(l1) == self.getOffsetBase(l2);
         @panic("Level equality not fully implemented yet.");
-    }    
+    }
+
+    /// Replace specified level parameters with the specified values
+    pub fn instantiate(self: *Self, l: Level, names: []Name, lvls: []Level) Level {
+        if (self.hasParam(l)) {
+            @panic("Level instantiation not yet implemented!");
+        }
+        _ = names;
+        _ = lvls;
+        return l;
+    }
 
 };

@@ -12,16 +12,18 @@ pub const TypeChecker = struct {
     arena: std.heap.ArenaAllocator,
     em: *ExprManager,
     lm: *LevelManager,
+    es: *ExprStore,
     whnf_cache: [2]std.hash_map.AutoHashMap(Expr, Expr),
     bvar_ctx: Buffer(Expr) = undefined, // bound variable local context
 
     // temporary buffers
     get_args_buf: Buffer(Expr) = undefined,
 
-    pub fn create(allocator: std.mem.Allocator, em: *ExprManager) *Self {
+    pub fn create(allocator: std.mem.Allocator, em: *ExprManager, es: *ExprStore) *Self {
         const self = allocator.create(Self) catch oom();
         self.* = .{ .arena = .init(allocator),
-            .em = em, .lm = em.lm, .whnf_cache = undefined };
+            .em = em, .lm = em.lm, .whnf_cache = undefined,
+            .es = es };
         self.whnf_cache = .{ .init(self.arena.allocator()), .init(self.arena.allocator()) };
 
         self.bvar_ctx = .init(self.arena.allocator());
@@ -41,13 +43,17 @@ pub const TypeChecker = struct {
         if (!em.isLambda(e)) return e;
         if (self.whnf_cache[0].get(e)) |whnf_e| return whnf_e;
 
-        // self.get_args_buf.clear();
-        // var f = em.getAppArgsRev(e, &self.get_args_buf);
-        // if (em.isLambda(f)) {
-        //     // ToDo
+        var whnf_e: Expr = undefined;
+        self.get_args_buf.clear();
+        //var f = em.getAppArgsRev(e, &self.get_args_buf);
+        // if (em.isLambda(f)) { // Beta reduction
+        //     // Todo
+        // } else { // Cannot beta reduce, so nothing to do
+        //     whnf_e = e;
         // }
 
-        // self.whnf_cache[0].put(e, whnf_e);
+        self.whnf_cache[0].put(e, whnf_e);
+        return whnf_e;
     }
 
 };

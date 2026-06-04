@@ -186,7 +186,45 @@ test "Expr.getAppArgsRev" {
     const head = ctx.em.getAppArgsRev(e, &revargs);
     try std.testing.expect(head == f);
     try std.testing.expect(revargs.len() == 3);
-    for (0..2) |i| {
+    for (0..3) |i| {
         try std.testing.expect(revargs.get(i) == args[2-i]);
     }
+}
+
+
+fn replace_test_f (s: *ExprStore, sube: Expr, offset: u32) ?Expr {
+    return switch (s.em.getNode(sube).content) {
+        .bvar => |idx| s.mkBvar(idx + offset),
+        else => null
+    };
+}
+
+test "ExprStore.replace" {
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    const s = ctx.gs;
+    const em = ctx.em;
+
+    const e = s.mkApp(s.mkBvar(0), s.mkLambda(0, s.mkSort(0), s.mkBvar(1)));
+
+    const replace_bvars = struct {
+        fn call (store: *ExprStore, sube: Expr, offset: u32) ?Expr {
+            return switch (store.em.getNode(sube).content) {
+                .bvar => |idx| store.mkBvar(idx + offset),
+                else => null
+            };
+        }
+    }.call;
+    const new_e = s.replace(e, replace_bvars);
+
+    const app_fun = em.getApp(new_e).fun;
+
+    try std.testing.expect(em.isBvar(app_fun));
+    try std.testing.expect(em.getNode(app_fun).content.bvar == 0);
+    
+    const app_arg = em.getApp(new_e).arg;
+    try std.testing.expect(em.isLambda(app_arg));
+    const lambda_body = em.getLambda(app_arg).body;
+    try std.testing.expect(em.isBvar(lambda_body));
+    try std.testing.expect(em.getNode(lambda_body).content.bvar == 2);
 }
