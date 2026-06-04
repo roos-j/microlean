@@ -206,7 +206,8 @@ test "ExprStore.replace" {
     const e = s.mkApp(s.mkBvar(0), s.mkLambda(0, s.mkSort(0), s.mkBvar(1)));
 
     const replace_bvars = struct {
-        fn call (store: *ExprStore, sube: Expr, offset: u32) ?Expr {
+        fn call (st: anytype, sube: Expr, offset: u32) ?Expr {
+            var store: *ExprStore = st;
             if (sube.isBvar()) {
                 return store.mkBvar(sube.bvarId() + offset);
             } else {
@@ -214,7 +215,7 @@ test "ExprStore.replace" {
             }
         }
     }.call;
-    const new_e = s.replace(e, replace_bvars);
+    const new_e = s.replace(s, e,  replace_bvars);
 
     const app_fun = em.getApp(new_e).fun;
 
@@ -226,4 +227,57 @@ test "ExprStore.replace" {
     const lambda_body = em.getLambda(app_arg).body;
     try std.testing.expect(lambda_body.isBvar());
     try std.testing.expect(lambda_body.bvarId() == 2);
+}
+
+test "ExprStore.substLooseBvars" {
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    const s = ctx.gs;
+    const em = ctx.em;
+
+    // Example 1
+    // forallE a:A => #0 #1
+    const e1 = s.mkForallE(0, s.mkFreeConst(1), 
+        s.mkApp(s.mkBvar(0), s.mkBvar(1)));
+    // Subst: [x, y]
+    const x = s.mkFreeConst(2);
+    const subst:[] const Expr = &.{ x, s.mkFreeConst(3) };
+    const res1 = s.substLooseBvars(e1, 0, subst);
+    // Expect: forallE a:A => #0 x
+    try std.testing.expect(res1.isPi());
+    const res1_body_app = em.getApp(em.getPi(res1).body);
+    try std.testing.expect(res1_body_app.fun.bvarId() == 0);
+    try std.testing.expect(res1_body_app.arg == x);
+    // With start index 1, expression should not change
+    try std.testing.expect(s.substLooseBvars(e1, 1, subst) == e1);
+
+    // Example 2
+    // fun a:A => fun b:B => g #2 #3 (2 loose bvars)
+    const e2 = s.mkLambda(0, s.mkFreeConst(1), 
+        s.mkLambda(2, s.mkFreeConst(3),
+        s.mkApp(s.mkApp(s.mkFreeConst(4), s.mkBvar(2)), s.mkBvar(3)) )); 
+    // Replace loose bvar by (h #0 #1)
+    const subs = s.mkApp(
+        s.mkApp(s.mkFreeConst(5), s.mkBvar(0)),
+        s.mkBvar(1));
+    var result = s.substLooseBvars(e2, 0, &.{subs});    
+    // Expect: fun a:A => fun b:B => g (h #2 #3) #2
+    // std.debug.print("subs loosebvar range = {d}\n", .{em.getLooseBvarRange(subs)});
+    // std.debug.print("e loosebvar range = {d}\n", .{em.getLooseBvarRange(e)});
+    // std.debug.print("Result loosebvar range = {d}\n", .{em.getLooseBvarRange(result)});
+    try std.testing.expect(em.getLooseBvarRange(result) == 2);
+    try std.testing.expect(result.isLambda());
+    result = em.getLambda(result).body;
+    try std.testing.expect(result.isLambda());
+    result = em.getLambda(result).body;
+    try std.testing.expect(result.isApp());
+    const app_g = em.getApp(result);
+    try std.testing.expect(app_g.arg.isBvar());
+    // std.debug.print("Result g_arg bvar id = {d}\n", .{app_g.arg.bvarId()});
+    try std.testing.expect(app_g.arg.bvarId() == 2);
+    const app_g_fun = em.getApp(app_g.fun);
+    const app_h = em.getApp(app_g_fun.arg);
+    try std.testing.expect(app_h.arg.bvarId() == 3);
+    const app_h_fun = em.getApp(app_h.fun);
+    try std.testing.expect(app_h_fun.arg.bvarId() == 2);
 }

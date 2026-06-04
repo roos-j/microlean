@@ -163,6 +163,7 @@ pub const ExprData = packed struct {
     has_level_param: bool, // Stored in `Expr` but still needed here for cached Expr's
     loose_bvar_range: u20, // max. de Brujin index + 1
 
+    /// Check that bvar range doesn't exceed maximum
     inline fn checkBvarRange(range: u32) void {
         if (range > std.math.maxInt(u20)) @panic("too many bound variables");
     }
@@ -524,6 +525,7 @@ pub const ExprStore = struct {
     /// `bvar` is immediate and doesn't actually require the store, but we still keep track of storeId
     pub fn mkBvar(self: *Self, idx: Idx) Expr {
         std.debug.assert(self.isOpen);
+        ExprData.checkBvarRange(idx);
         return .{ ._kind = .bvar, 
             ._has_level_param = false, 
             .data = .{.bvarId = idx},
@@ -598,14 +600,14 @@ pub const ExprStore = struct {
     /// If `f` provides an Expr, then replace the current subexpression. Substituted expressions are not traversed further.
     /// `f` takes the current subexpression and the number of binders it is contained in relative to the top level expression.
     /// Return the resulting full expression.
-    pub fn replace(self: *Self, e: Expr, f: fn (*ExprStore, Expr, u32) ?Expr) Expr {
-        return self.replace_rec(e, f, 0);
+    pub fn replace(self: *Self, ctx: anytype, e: Expr, f: fn (anytype, Expr, u32) ?Expr) Expr {
+        return self.replace_rec( ctx, e,f, 0);
     }
 
     // ToDo: make this go through a cache for fixed f. Key is (e,offset) and output is result
-    fn replace_rec(self: *Self, e: Expr, f: fn (*ExprStore, Expr, u32) ?Expr, offset: u32) Expr {
+    fn replace_rec(self: *Self, ctx: anytype, e: Expr, f: fn (anytype, Expr, u32) ?Expr, offset: u32) Expr {
         const em = self.em;
-        const subst = f(self, e, offset);
+        const subst = f(ctx, e, offset);
         if (subst) |new_e| {
             return new_e;
         }
@@ -613,26 +615,101 @@ pub const ExprStore = struct {
         switch (em.getNode(e).content) {
             .bvar, .sort, .cnst => unreachable,
             .app => |app| {
-                const newfun = self.replace_rec(app.fun, f, offset);
-                const newarg = self.replace_rec(app.arg, f, offset);
+                const newfun = self.replace_rec(ctx, app.fun, f, offset);
+                const newarg = self.replace_rec(ctx, app.arg, f, offset);
                 if (newfun == app.fun and newarg == app.arg) return e;
                 const new_e = self.mkApp(newfun, newarg);
                 return new_e;
             },
             .lambda => |lam| {
-                const newtype = self.replace_rec(lam.binderType, f, offset);
-                const newbody = self.replace_rec(lam.body, f, offset + 1);
+                const newtype = self.replace_rec(ctx, lam.binderType, f, offset);
+                const newbody = self.replace_rec(ctx, lam.body, f, offset + 1);
                 if (newtype == lam.binderType and newbody == lam.body) return e;
                 const new_e = self.mkLambda(lam.binderName, newtype, newbody);
                 return new_e;
             },
             .forallE => |pi| {
-                const newtype = self.replace_rec(pi.binderType, f, offset);
-                const newbody = self.replace_rec(pi.body, f, offset + 1);
+                const newtype = self.replace_rec(ctx, pi.binderType, f, offset);
+                const newbody = self.replace_rec(ctx, pi.body, f, offset + 1);
                 if (newtype == pi.binderType and newbody == pi.body) return e;
                 const new_e = self.mkForallE(pi.binderName, newtype, newbody);
                 return new_e;
             }
         }
+    }
+
+    /// Substitute loose (unbound) bvars in `e` with target expressions.
+    /// Typically `e` will be the body of some binder.
+    /// Start substituting at de Brujin index `startIdx` (counting only unbound bvars).
+    /// Indices past the substitution window are adjusted downward to account for resolved binders
+    pub fn substLooseBvars(self: *Self, e: Expr, startIdx: Idx, subst: []const Expr) Expr {
+        if (subst.len == 0) return e;
+        if (self.em.getLooseBvarRange(e) <= startIdx) return e;
+        const SubstCtx = struct {
+            const Ctx = @This();
+            store: *Self,
+            startIdx: Idx,
+            subst: []const Expr,
+            // Called on every subexpression
+            fn visit(c: anytype, sube: Expr, binderDepth: u32) ?Expr {
+                const ctx: Ctx = c;
+                const es = ctx.store;
+                const em = es.em;
+                const localStartIdx = ctx.startIdx + binderDepth;
+                if (em.getLooseBvarRange(sube) <= localStartIdx) {
+                    // No more loose bvars to capture in this subtree
+                    return sube; // Stop visiting this subtree
+                }
+                if (localStartIdx < ctx.startIdx) {
+                    // u32 overflow means there can't be anything left to do
+                    return sube;
+                }
+                if (!sube.isBvar()) return null;
+                const bvarId = sube.bvarId();
+                if (bvarId < localStartIdx) {
+                    // This bvar is before the substitution window, no change needed
+                    return null;
+                }
+                const end = localStartIdx + ctx.subst.len;
+                if (bvarId < end) {
+                    // Substitute this bvar, first need to lift its bvars
+                    std.debug.assert(bvarId >= localStartIdx);
+                    return es.liftLooseBvars(ctx.subst[bvarId - localStartIdx], 0, binderDepth);
+                } else {
+                    // This bvar is past the substitution window, adjust index
+                    return es.mkBvar(@intCast(bvarId - ctx.subst.len));
+                }
+            }
+        };
+        const context: SubstCtx = .{ .store = self, 
+            .startIdx = startIdx, .subst = subst };
+        return self.replace(context, e, SubstCtx.visit);
+    }
+
+    
+    /// Add specified offset to loose bvars in the target expression.
+    /// Return modified expression.
+    pub fn liftLooseBvars(self: *Self, e: Expr, startIdx: Idx, offset: Idx) Expr {
+        if (offset == 0) return e;
+        if (self.em.getLooseBvarRange(e) <= startIdx) return e;
+        const LiftCtx = struct {
+            const Ctx = @This();
+            store: *Self,
+            startIdx: Idx,
+            offset: Idx,
+            fn visit(c: anytype, sube: Expr, binderDepth: u32) ?Expr {
+                const ctx: Ctx = c;
+                const em = ctx.store.em;
+                const localStartIdx = ctx.startIdx + binderDepth;
+                if (em.getLooseBvarRange(sube) <= localStartIdx) return sube;
+                if (localStartIdx < ctx.startIdx) return sube; // overflow
+                if (!sube.isBvar()) return null;
+                const bvarId = sube.bvarId();
+                if (bvarId < localStartIdx) return null;
+                return ctx.store.mkBvar(bvarId + ctx.offset);
+            }
+        };
+        const context: LiftCtx = .{ .store = self, .startIdx = startIdx, .offset = offset };
+        return self.replace(context, e, LiftCtx.visit);
     }
 };
