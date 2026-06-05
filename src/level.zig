@@ -4,7 +4,7 @@ const Buffer = @import("common.zig").Buffer;
 const oom = @import("common.zig").oom;
 
 // Universe level
-pub const Level = u32; // 28 bits so that Expr fits in 64 bits
+pub const Level = u32;
 
 pub const LevelMax = struct { lhs: Level, rhs: Level };
 
@@ -237,7 +237,7 @@ pub const LevelManager = struct {
     }
 
     /// Replace specified level parameters with the specified values
-    pub fn instantiate(self: *Self, l: Level, names: []Name, lvls: []Level) Level {
+    pub fn substLevelParams(self: *Self, l: Level, names: []Name, lvls: []Level) Level {
         if (self.hasParam(l)) {
             @panic("Level instantiation not yet implemented!");
         }

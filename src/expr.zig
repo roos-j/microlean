@@ -32,7 +32,11 @@ pub const Expr = packed struct {
     pub inline fn isApp(e: Expr) bool { return e.kind() == .app; }
     pub inline fn isLambda(e: Expr) bool { return e.kind() == .lambda; }
     pub inline fn isPi(e: Expr) bool { return e.kind() == .forallE; }
+
     pub inline fn hasLevelParam(e: Expr) bool { return e._has_level_param; }
+
+    /// A free const is one without universe level parameters
+    pub inline fn isFreeConst(e: Expr) bool { return e.isConst() and !e.hasLevelParam(); }
 
     /// Literal equality of expression -- for bvar, only idx counts; for sort only level
     /// For Const, names will be store-dependent, so we use exact equality
@@ -49,7 +53,7 @@ pub const Expr = packed struct {
 
     /// Immediates are completely encoded in `Expr`, non-immediates have an associated `ExprNode` which is cached
     pub inline fn isImmediate(e: Expr) bool {
-        return e.isBvar() or e.isSort() or (e.isConst() and !e.hasLevelParam());
+        return e.isBvar() or e.isSort() or e.isFreeConst();
     }
 
     pub inline fn isAtomic(e: Expr) bool {
@@ -78,8 +82,8 @@ pub const Expr = packed struct {
         return e.data.lvl;
     }
 
-    pub inline fn declName(e: Expr) Name {
-        std.debug.assert(e.isConst());
+    pub inline fn constName(e: Expr) Name {
+        std.debug.assert(e.isFreeConst());
         return e.data.name;
     }
 
@@ -101,8 +105,8 @@ pub const ExprKind = enum(u4) { bvar, sort, cnst, app, lambda, forallE };
 
 // Constant with universe levels
 pub const ExprConst = struct {
-    declName: Name,
-    us: []const Level
+    constName: Name,
+    levels: []const Level
 };
 
 // Function application
@@ -145,8 +149,8 @@ pub const ExprContent = union(ExprKind) {
         std.hash.autoHash(&h, self.kind());
         switch (self) {
             .cnst => |c| {
-                std.hash.autoHash(&h, c.declName);
-                for (c.us) |u| {
+                std.hash.autoHash(&h, c.constName);
+                for (c.levels) |u| {
                     std.hash.autoHash(&h, u);
                 }
             },
@@ -168,6 +172,7 @@ pub const ExprContent = union(ExprKind) {
 };
 
 /// Computed Expr meta data
+/// Todo: see if it makes sense to cache some info about nested app's (here or in Expr)
 pub const ExprData = packed struct {
     // same 64bit layout as in Lean 4 kernel
     hash: u32, // Lower 32bit of hash
@@ -201,7 +206,7 @@ pub const ExprData = packed struct {
 
     fn mkConst(content: ExprContent, lm: *const LevelManager) ExprData {
         var has_param = false;
-        for (content.cnst.us) |u| {
+        for (content.cnst.levels) |u| {
             if (lm.hasParam(u)) {
                 has_param = true;
                 break;
@@ -279,8 +284,8 @@ pub const ExprManager = struct {
         pub fn eql(_: Context, a: ExprContent, b: ExprContent) bool {
             if (a.kind() != b.kind()) return false;
             return switch (a) {
-                .cnst => |c| c.declName == b.cnst.declName 
-                    and std.mem.eql(Level, c.us, b.cnst.us),
+                .cnst => |c| c.constName == b.cnst.constName 
+                    and std.mem.eql(Level, c.levels, b.cnst.levels),
                 else => std.meta.eql(a, b)
             };
         }
@@ -384,6 +389,20 @@ pub const ExprManager = struct {
         }
     }
 
+    pub inline fn hasLooseBvars(self: *const Self, e: Expr) bool {
+        return self.getLooseBvarRange(e) > 0;
+    }
+
+    pub inline fn getLevelParams(self: *const Self, e: Expr) []const Level {
+        std.debug.assert(e.isConst() and e.hasLevelParam());
+        return self.getNode(e).content.cnst.levels;
+    }
+
+    pub inline fn getNumLevelParams(self: *const Self, e: Expr) u32 {
+        std.debug.assert(e.isConst());
+        return if (e.hasLevelParam()) self.getNode(e).content.cnst.levels.len else 0;
+    }
+
     pub inline fn getHash32(self: *const Self, e: Expr) u32 {
         std.debug.assert(!e.isImmediate()); // can still get a hash for imm, but shouldn't be needed
         return self.getNode(e).data.hash;
@@ -391,13 +410,13 @@ pub const ExprManager = struct {
 
     pub inline fn getConstName(self: *const Self, e: Expr) Name {
         std.debug.assert(e.isConst());
-        if (e.isImmediate()) return e.declName();
-        return self.getNode(e).content.cnst.declName;
+        if (e.isImmediate()) return e.constName();
+        return self.getNode(e).content.cnst.constName;
     }
 
     pub inline fn getConst(self: *const Self, e: Expr) ExprConst {
         std.debug.assert(e.isConst());
-        if (e.isImmediate()) return .{ .declName = e.declName(), .us = &.{} };
+        if (e.isImmediate()) return .{ .constName = e.constName(), .levels = &.{} };
         return self.getNode(e).content.cnst;
     }
 
@@ -414,6 +433,16 @@ pub const ExprManager = struct {
     pub inline fn getApp(self: *const Self, e: Expr) ExprApp {
         std.debug.assert(e.isApp());
         return self.getNode(e).content.app;
+    }
+
+    /// If `e` is `app (app (app .. (app f arg0 ) arg1 ..`, return `f`.
+    pub inline fn getAppsFun(self: *const Self, e: Expr) Expr {
+        std.debug.assert(e.isApp());
+        var e1 = e;
+        while (e1.isApp()) {
+            e1 = self.getApp().fun;
+        }
+        return e1;
     }
 
     /// Unwrap function applications, store arguments in reversed order and return head function
@@ -447,8 +476,8 @@ pub const ExprStore = struct {
         pub fn eql(_: Context, a: ExprContent, b: ExprContent) bool {
             if (a.kind() != b.kind()) return false;
             return switch (a) {
-                .cnst => |c| c.declName == b.cnst.declName 
-                    and std.mem.eql(Level, c.us, b.cnst.us),
+                .cnst => |c| c.constName == b.cnst.constName 
+                    and std.mem.eql(Level, c.levels, b.cnst.levels),
                 else => std.meta.eql(a, b)
             };
         }
@@ -572,7 +601,7 @@ pub const ExprStore = struct {
         // ToDo: This is potentially very inefficient for now, memcpy even happens before cache
         // Use a builder pattern or similar later
         const local_us = self.arena.allocator().dupe(Level, us) catch oom();
-        return self.cache(.{ .cnst = .{.declName = declName, .us = local_us} });
+        return self.cache(.{ .cnst = .{.constName = declName, .levels = local_us} });
     }
 
     pub fn mkApp(self: *Self, fun: Expr, arg: Expr) Expr {
@@ -726,4 +755,14 @@ pub const ExprStore = struct {
         const context: LiftCtx = .{ .store = self, .startIdx = startIdx, .offset = offset };
         return self.replace(context, e, LiftCtx.visit);
     }
+
+    /// Substitute universe level parameters into an expression by fully traversing it.
+    pub fn substLevelParams(self: *Self, e: Expr, names: []const Name, levels: []const Level) Expr {
+        _ = self;
+        _ = e;
+        _ = names;
+        _ = levels;
+        @panic("universe level substitution into expressions not yet implemented");
+    }
+
 };
