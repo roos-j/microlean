@@ -34,6 +34,19 @@ pub const Expr = packed struct {
     pub inline fn isPi(e: Expr) bool { return e.kind() == .forallE; }
     pub inline fn hasLevelParam(e: Expr) bool { return e._has_level_param; }
 
+    /// Literal equality of expression -- for bvar, only idx counts; for sort only level
+    /// For Const, names will be store-dependent, so we use exact equality
+    pub inline fn equal(e1: Expr, e2: Expr) bool {
+        if (e1 == e2) return true;
+        if (e1.isBvar() and e2.isBvar()) {
+            return e1.bvarId() == e2.bvarId();
+        } else if (e1.isSort() and e2.isSort()) {
+            return e1.level() == e2.level();
+        } else {
+            return false;
+        }
+    }
+
     /// Immediates are completely encoded in `Expr`, non-immediates have an associated `ExprNode` which is cached
     pub inline fn isImmediate(e: Expr) bool {
         return e.isBvar() or e.isSort() or (e.isConst() and !e.hasLevelParam());
@@ -404,6 +417,7 @@ pub const ExprManager = struct {
     }
 
     /// Unwrap function applications, store arguments in reversed order and return head function
+    /// E.g. `app (app (app f a0) a1) a2` will be stored as `[a2, a1, a0]`
     pub fn getAppArgsRev(self: *const Self, e: Expr, args: *Buffer(Expr)) Expr {
         var curr = e;
         while (curr.isApp()) {
@@ -617,7 +631,7 @@ pub const ExprStore = struct {
             .app => |app| {
                 const newfun = self.replace_rec(ctx, app.fun, f, offset);
                 const newarg = self.replace_rec(ctx, app.arg, f, offset);
-                if (newfun == app.fun and newarg == app.arg) return e;
+                if (newfun == app.fun and newarg == app.arg) return e; // ToDo: do we need to use Expr.equal here?
                 const new_e = self.mkApp(newfun, newarg);
                 return new_e;
             },
