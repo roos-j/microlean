@@ -288,10 +288,10 @@ pub const ExprManager = struct {
 
     allocator: std.mem.Allocator,
     globalStore: ExprStore,
-    lm: *const LevelManager,
+    lm: *LevelManager,
     stores: std.ArrayList(*ExprStore) = .empty, // ExprStoreId is an index into this store
 
-    pub fn create(allocator: std.mem.Allocator, lm: *const LevelManager) *ExprManager {
+    pub fn create(allocator: std.mem.Allocator, lm: *LevelManager) *ExprManager {
         const self = allocator.create(ExprManager) catch oom();
         self.* = .{ .allocator = allocator, 
              .globalStore = undefined,

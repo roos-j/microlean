@@ -73,7 +73,7 @@ pub const TypeChecker = struct {
             whnf_e = e;
         }
 
-        self.whnf_cache[0].put(e, whnf_e);
+        self.whnf_cache[0].put(e, whnf_e) catch oom();
         return whnf_e;
     }
 

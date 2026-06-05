@@ -4,6 +4,7 @@ const LevelManager = @import("src/level.zig").LevelManager;
 const Expr = @import("src/expr.zig").Expr;
 const ExprManager = @import("src/expr.zig").ExprManager;
 const ExprStore = @import("src/expr.zig").ExprStore;
+const TypeChecker = @import("src/type_checker.zig").TypeChecker;
 
 const TestCtx = struct {
     const Self = @This();
@@ -280,4 +281,39 @@ test "ExprStore.substLooseBvars" {
     try std.testing.expect(app_h.arg.bvarId() == 3);
     const app_h_fun = em.getApp(app_h.fun);
     try std.testing.expect(app_h_fun.arg.bvarId() == 2);
+}
+
+test "TypeChecker.whnf_core" {
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    const s = ctx.gs;
+    const em = ctx.em;
+
+    const tc: *TypeChecker = .create(ctx.allocator, em, s);
+    defer tc.destroy();
+
+    const nf = 0;
+    const X = s.mkFreeConst(1);
+    const x0 = s.mkFreeConst(2);
+    const x1 = s.mkFreeConst(3);
+    // app ( app (fun x:X => fun y: => app #0 #1) x0) x1 = app x1 x0 
+    const e = s.mkApp(s.mkApp(
+                s.mkLambda(nf, X, s.mkLambda(nf, X, 
+                s.mkApp (s.mkBvar(0), s.mkBvar(1)))),
+            x0), x1);
+
+    const res = tc.whnfCore(e);
+    try std.testing.expect(res.isApp());
+    try std.testing.expect(em.getApp(res).fun == x1);
+    try std.testing.expect(em.getApp(res).arg == x0);
+
+    // app (fun x:X => #0) #0 = #0
+    try std.testing.expect(tc.whnfCore(s.mkApp(s.mkLambda(nf, X, s.mkBvar(0)), s.mkBvar(0))).bvarId() == 0);
+
+    // app (fun x:X => #1) #2 = #0
+    try std.testing.expect(tc.whnfCore(s.mkApp(s.mkLambda(nf, X, s.mkBvar(1)), s.mkBvar(2))).bvarId() == 0);
+
+    // app (fun x:X => )
+
+
 }
