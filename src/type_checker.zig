@@ -1,5 +1,6 @@
 const std = @import("std");
 const oom = @import("common.zig").oom;
+const log = @import("common.zig").log;
 const Buffer = @import("common.zig").Buffer;
 const Expr = @import("expr.zig").Expr;
 const ExprManager = @import("expr.zig").ExprManager;
@@ -9,7 +10,10 @@ const Environment = @import("environment.zig").Environment;
 const ConstantInfo = @import("environment.zig").ConstantInfo;
 
 const KernelError = error{
-    IllegalLooseBvars
+    IllegalLooseBvars, 
+    UnknownConstant,
+    ExpectedSort, // Expr was expected to be a `sort`
+    ExpectedPi, // Expr was expected to be a function type
 };
 
 pub const TypeChecker = struct {
@@ -88,7 +92,7 @@ pub const TypeChecker = struct {
     /// Will only return it if it has a value and if level parameter arity matches given const.
     pub fn findConstantInfo(self: *Self, e: Expr) ?ConstantInfo {
         std.debug.assert(e.isConst());
-        const info: ConstantInfo = undefined;
+        var info: ConstantInfo = undefined;
         if (e.isFreeConst()) {
             if (self.env.find(e.constName())) |inf| { info = inf; }
             else { return null; }
@@ -97,7 +101,7 @@ pub const TypeChecker = struct {
         } else {
             if (self.env.find(self.em.getConstName(e))) |inf| { info = inf; } 
             else { return null; }
-            if (!info.hasValue) return null;
+            if (!info.hasValue()) return null;
             if (self.em.getNumLevelParams(e) == info.getNumLevelParams()) 
                 return info;
         }
@@ -129,12 +133,127 @@ pub const TypeChecker = struct {
                 const f = self.em.getAppsFun(e);
                 if (self.unfoldConst(f)) |fval| {
                     self.get_args_buf.clear();
-                    _ = self.em.getAppArgsRev(e);
+                    _ = self.em.getAppArgsRev(e, &self.get_args_buf);
                     return self.es.mkAppArgsRev(fval, self.get_args_buf.items());
                 } else { return null; }
             },
             else => return null
         }
+    }
+
+    /// Return weak head normal form.
+    /// Currently: recursively apply beta and delta reduction to head.
+    pub fn whnf(self: *Self, e: Expr) Expr {
+        switch (e.kind()) {
+            .bvar, .forallE, .sort => return e,
+            .lambda, .app, .cnst => {}
+        }
+
+        if (self.whnf_cache[1].get(e)) |whnf_e| {
+            return whnf_e;
+        }
+
+        var whnf_e = e;
+        while (true) {
+            whnf_e = self.whnfCore(whnf_e);
+            if (self.unfoldHeadConst(whnf_e)) |new_e| {
+                whnf_e = new_e;
+            } else {
+                break;
+            }
+        }
+
+        self.whnf_cache[1].put(e, whnf_e) catch oom();
+
+        return whnf_e;
+    }
+
+    /// Infer type of an expression and optionally type-check.
+    pub fn inferType(self: *Self, e: Expr, check: bool) KernelError!Expr {
+        if (self.bvar_ctx.len() < self.em.getLooseBvarRange(e)) {
+            return KernelError.IllegalLooseBvars;
+        }
+
+        // ToDo: currently, can only cache when there is no bvar context
+        // Either include bvar ctx in cache or use fvars like in Lean kernel
+        
+        return switch (e.kind()) {
+            .bvar => self.inferBvar(e),
+            .sort => self.inferSort(e, check),
+            .cnst => self.inferConst(e, check),
+            .app => self.inferApp(e, check),
+            .lambda => self.inferLambda(e, check),
+            .forallE => self.inferPi(e, check)
+        };
+    }
+
+    /// Fetch type of bvar from local context.
+    /// Note: In the actual Lean kernel this is instead
+    /// implemented by adding fvar declarations into the local context
+    /// when exploring the body of a binder, so that there are never loose bvars in inferType.
+    pub fn inferBvar(self: *Self, e: Expr) Expr {
+        std.debug.assert(e.isBvar());
+        std.debug.assert(e.bvarId() < self.bvar_ctx.len());
+        const idx = e.bvarId();
+        const bvar_type = self.bvar_ctx.get(self.bvar_ctx.len() - 1 - idx);
+        // adjust bvars in the type for nesting depth
+        return self.es.liftLooseBvars(bvar_type, 0, idx+1);      
+    }
+
+    /// Type of `sort u` is `sort (u+1)`
+    pub fn inferSort(self: *Self, e: Expr, check: bool) Expr {
+        std.debug.assert(e.isSort());
+        if (check) @panic("not yet implemented");
+        return self.es.mkSort(self.lm.mkSucc(e.level()));
+    }
+
+    /// Look up type of `const` in environment.
+    pub fn inferConst(self: *Self, e: Expr, check: bool) KernelError!Expr {
+        std.debug.assert(e.isConst());
+        if (check) @panic("not yet implemented");
+        if (self.env.find(e.constName())) |info| {
+            return info.getType();
+        } else {
+            return KernelError.UnknownConstant;
+        }
+    }
+
+    pub fn inferApp(self: *Self, e: Expr, check: bool) KernelError!Expr {
+        std.debug.assert(e.isApp());
+        if (check) @panic("not yet implemented");
+        const app = self.em.getApp(e);
+        var fun_type = try self.inferType(app.fun, check);
+        fun_type = try ensurePi(fun_type);
+        // self.es.substLooseBvars()
+        // TODO
+    }
+
+    // pub fn inferLambda(self: *Self, e: Expr, check: bool) KernelError!Expr {
+    //     std.debug.assert(e.isLambda());
+    //     // TODO
+    // }
+
+    // pub fn inferPi(self: *Self, e: Expr, check: bool) KernelError!Expr {
+    //     std.debug.assert(e.isPi());
+    //     // TODO
+    // }
+
+    /// Ensures that `e` is a dependent function type,
+    /// possibly after passing to whnf. Return a pi or throw an error.
+    pub fn ensurePi(self: *Self, e: Expr) KernelError!Expr {
+        if (e.isPi()) return e;
+        const whnf_e = self.whnf(e);
+        if (whnf_e.isPi()) { return whnf_e; }
+        else { return KernelError.ExpectedPi; }
+    }
+
+    /// Ensures that `e` is a sort,
+    /// possibly after passing to whnf. Return a sort or throw an error.
+    pub fn ensureSort(self: *Self, e: Expr) KernelError!Expr {
+        if (e.isSort()) return e;
+        const whnf_e = self.whnf(e);
+        if (whnf_e.isSort()) { return whnf_e; }
+        else { return KernelError.ExpectedSort; }
     }
 
 };

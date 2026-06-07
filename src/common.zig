@@ -51,3 +51,9 @@ pub fn Buffer(comptime T: type) type {
         }
     };
 }
+
+/// Log dummy for now
+pub fn log(msg: []const u8, args: anytype) void {
+    std.debug.print(msg, args);
+    std.debug.print("\n", &.{});
+}

@@ -1,5 +1,7 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Name = @import("common.zig").Name;
+const oom = @import("common.zig").oom;
 const Expr = @import("expr.zig").Expr;
 
 pub const AxiomVal = struct {
@@ -66,7 +68,14 @@ pub const ConstantInfo = union(ConstantInfoKind) {
     }
 
     pub inline fn getNumLevelParams(info: ConstantInfo) u32 {
-        return info.getLevelParams().len;
+        return @intCast(info.getLevelParams().len);
+    }
+
+    pub inline fn getType(info: ConstantInfo) Expr {
+        return switch (info) {
+            .axiomInfo => |val| val.type,
+            .defnInfo => |val| val.type
+        };
     }
 
 };
@@ -86,18 +95,37 @@ pub const Environment = struct {
     allocator: std.mem.Allocator,
     constants: std.hash_map.AutoHashMap(Name, ConstantInfo),
 
-    pub fn init(allocator: std.mem.Allocator) Self {
-        const self: Self = .{ .allocator = allocator, 
+    pub fn create(allocator: std.mem.Allocator) *Self {
+        const self = allocator.create(Environment) catch oom();
+        self.* = .{ .allocator = allocator, 
             .constants = .init(allocator) };
         return self;
     }
 
-    pub fn deinit(self: *Self) void {
+    pub fn destroy(self: *Self) void {
         self.constants.deinit();
+        self.allocator.destroy(self);
     }
 
     pub fn find(self: *const Self, name: Name) ?ConstantInfo {
         return self.constants.get(name);
+    }
+
+    /// Add a constant to the environment without type checking (debug only).
+    /// Will replace existing constant if existing already.
+    pub fn addUnchecked(self: *Self, name: Name, level_params: []const Name, typ: Expr, value: Expr) void {
+        if (builtin.mode != .Debug) {
+            @panic("addUnchecked only for debugging");
+        }
+        const info: ConstantInfo = .{ .defnInfo = .{ .name = name,
+            .levelParams = level_params, .type = typ, .value = value } };
+        self.constants.put(name, info) catch oom();
+    } 
+
+    /// Add an axiom to the environment.
+    pub fn addAxiom(self: *Self, name: Name, level_params: []const Name, typ: Expr) void {
+        const info: ConstantInfo = .{ .axiomInfo = .{ .name = name, .levelParams = level_params, .type = typ } };
+        self.constants.put(name, info) catch oom();   
     }
 
     // /// Add a checked declaration to the environment

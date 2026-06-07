@@ -1,10 +1,12 @@
 const std = @import("std");
 const Buffer = @import("src/common.zig").Buffer;
+const Name = @import("src/common.zig").Name;
 const LevelManager = @import("src/level.zig").LevelManager;
 const Expr = @import("src/expr.zig").Expr;
 const ExprManager = @import("src/expr.zig").ExprManager;
 const ExprStore = @import("src/expr.zig").ExprStore;
 const TypeChecker = @import("src/type_checker.zig").TypeChecker;
+const Environment = @import("src/environment.zig").Environment;
 
 const TestCtx = struct {
     const Self = @This();
@@ -13,22 +15,26 @@ const TestCtx = struct {
     lm: *LevelManager,
     em: *ExprManager,
     gs: *ExprStore,
+    env: *Environment,
 
     pub fn init() Self {
         const allocator = std.testing.allocator;
         const lm = LevelManager.create(allocator);
         const em = ExprManager.create(allocator, lm);
+        const env = Environment.create(allocator);
         return .{
             .allocator = allocator,
             .lm = lm,
             .em = em,
-            .gs = em.getGlobalStore()
+            .gs = em.getGlobalStore(),
+            .env = env
         };
     }
 
     pub fn deinit(self: *Self) void {
         self.em.destroy();
         self.lm.destroy();
+        self.env.destroy();
     }
 };
 
@@ -289,7 +295,7 @@ test "TypeChecker.whnf_core" {
     const s = ctx.gs;
     const em = ctx.em;
 
-    const tc: *TypeChecker = .create(ctx.allocator, em, s);
+    const tc: *TypeChecker = .create(ctx.allocator, em, s, ctx.env);
     defer tc.destroy();
 
     const nf = 0;
@@ -314,6 +320,46 @@ test "TypeChecker.whnf_core" {
     try std.testing.expect(tc.whnfCore(s.mkApp(s.mkLambda(nf, X, s.mkBvar(1)), s.mkBvar(2))).bvarId() == 0);
 
     // app (fun x:X => )
+}
 
+test "TypeChecker.unfoldDefinition" {
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    const s = ctx.gs;
+    const lm = ctx.lm;
+    const em = ctx.em;
+    const env = ctx.env;
 
+    const cnFalse = 1;
+    const Prop = s.mkSort(lm.mkZero());
+    env.addAxiom(cnFalse, &.{}, Prop);
+    const False = s.mkConst(cnFalse, &.{});
+    try std.testing.expect(!env.find(cnFalse).?.hasValue()); // constant has no value field
+
+    const cnNot = 2;
+    const nA = 3;
+    const Not_val = s.mkLambda(nA, Prop, s.mkForallE(0, s.mkBvar(0), False));
+    env.addUnchecked(cnNot, &.{}, 
+        s.mkForallE(0, Prop, Prop), 
+        Not_val);
+    const Not = s.mkConst(cnNot, &.{});
+
+    const cnTrue = 4;
+    const True_val = s.mkApp(Not, False);
+    env.addUnchecked(cnTrue, &.{}, Prop, True_val);
+    const True = s.mkConst(cnTrue, &.{});
+
+    const True_info = env.find(cnTrue) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(True_info.hasValue());
+    try std.testing.expect(True_info.getValue() == True_val);
+
+    const tc: *TypeChecker = .create(ctx.allocator, em, s, env);
+    defer tc.destroy();
+    
+    try std.testing.expect(tc.unfoldConst(False) == null);
+    try std.testing.expect(tc.unfoldConst(True) == True_val);
+    try std.testing.expect(tc.unfoldHeadConst(True_val) == s.mkApp(Not_val, False));
+
+    const True_whnf = s.mkForallE(0, False, False);
+    try std.testing.expect(tc.whnf(True) == True_whnf);
 }

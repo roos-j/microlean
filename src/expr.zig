@@ -400,7 +400,7 @@ pub const ExprManager = struct {
 
     pub inline fn getNumLevelParams(self: *const Self, e: Expr) u32 {
         std.debug.assert(e.isConst());
-        return if (e.hasLevelParam()) self.getNode(e).content.cnst.levels.len else 0;
+        return if (e.hasLevelParam()) @intCast(self.getNode(e).content.cnst.levels.len) else 0;
     }
 
     pub inline fn getHash32(self: *const Self, e: Expr) u32 {
@@ -440,7 +440,7 @@ pub const ExprManager = struct {
         std.debug.assert(e.isApp());
         var e1 = e;
         while (e1.isApp()) {
-            e1 = self.getApp().fun;
+            e1 = self.getApp(e1).fun;
         }
         return e1;
     }
