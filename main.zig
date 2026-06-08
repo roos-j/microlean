@@ -15,20 +15,4 @@ pub fn main() !void {
 
     std.debug.print("bitSizeOf ExprKind={d}\n", .{@bitSizeOf(E.ExprKind)});
     std.debug.print("sizeOf ExprKind={d}\n", .{@sizeOf(E.ExprKind)});
-
-    // const K = enum(u3) { a0, a1, a2, a3, a4, a5 };
-
-    const A = packed struct {
-        id: u32,
-
-        k: E.ExprKind,
-        _reserved: u4,
-
-        _reserved2: u8,
-
-        storeId: u16
-    };
-
-    std.debug.assert(@bitSizeOf(A) == 64);
-
 }
