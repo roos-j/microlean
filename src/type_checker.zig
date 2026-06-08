@@ -14,6 +14,8 @@ const KernelError = error{
     UnknownConstant,
     ExpectedSort, // Expr was expected to be a `sort`
     ExpectedPi, // Expr was expected to be a function type
+    AppTypeMismatch, // App argument type does not match expected type
+    Timeout // Deterministic timeout
 };
 
 pub const TypeChecker = struct {
@@ -142,7 +144,7 @@ pub const TypeChecker = struct {
     }
 
     /// Return weak head normal form.
-    /// Currently: recursively apply beta and delta reduction to head.
+    /// For the current language subset this means: recursively apply beta and delta reduction to head.
     pub fn whnf(self: *Self, e: Expr) Expr {
         switch (e.kind()) {
             .bvar, .forallE, .sort => return e,
@@ -168,19 +170,22 @@ pub const TypeChecker = struct {
         return whnf_e;
     }
 
-    /// Infer type of an expression and optionally type-check.
+    /// Infer type of an expression.
+    /// If check is `true` then the output is guaranteed to be a well-formed
+    /// type `t` satisfying `e: t`; otherwise only the checks required
+    /// to build the inferred type are performed.
     pub fn inferType(self: *Self, e: Expr, check: bool) KernelError!Expr {
         if (self.bvar_ctx.len() < self.em.getLooseBvarRange(e)) {
             return KernelError.IllegalLooseBvars;
         }
 
-        // ToDo: currently, can only cache when there is no bvar context
+        // ToDo: caching. Currently, could only cache when there is no bvar context
         // Either include bvar ctx in cache or use fvars like in Lean kernel
         
         return switch (e.kind()) {
             .bvar => self.inferBvar(e),
-            .sort => self.inferSort(e, check),
-            .cnst => self.inferConst(e, check),
+            .sort => self.inferSort(e),
+            .cnst => self.inferConst(e),
             .app => self.inferApp(e, check),
             .lambda => self.inferLambda(e, check),
             .forallE => self.inferPi(e, check)
@@ -201,17 +206,15 @@ pub const TypeChecker = struct {
     }
 
     /// Type of `sort u` is `sort (u+1)`
-    pub fn inferSort(self: *Self, e: Expr, check: bool) Expr {
+    pub fn inferSort(self: *Self, e: Expr) Expr {
         std.debug.assert(e.isSort());
-        if (check) @panic("not yet implemented");
         if (e.hasLevelParam()) @panic("not yet implemented");
         return self.es.mkSort(self.lm.mkSucc(e.level()));
     }
 
-    /// Look up type of `const` in environment.
-    pub fn inferConst(self: *Self, e: Expr, check: bool) KernelError!Expr {
+    /// Look up type of `const` in environment. We assume the environment is trusted / type-checked.
+    pub fn inferConst(self: *Self, e: Expr) KernelError!Expr {
         std.debug.assert(e.isConst());
-        if (check) @panic("not yet implemented");
         if (e.hasLevelParam()) @panic("not yet implemented");
         if (self.env.find(e.constName())) |info| {
             return info.getType();
@@ -222,20 +225,31 @@ pub const TypeChecker = struct {
 
     pub fn inferApp(self: *Self, e: Expr, check: bool) KernelError!Expr {
         std.debug.assert(e.isApp());
-        if (check) @panic("not yet implemented");
+        //if (check) @panic("not yet implemented");
         // TODO: treat chain of apps at once
         const app = self.em.getApp(e);
         var fun_type = try self.inferType(app.fun, check);
         fun_type = try self.ensurePi(fun_type);
         const pi = self.em.getPi(fun_type);
+        if (check) {
+            // Check that type of argument matches prescribed binder type
+            const arg_type = try self.inferType(app.arg, check);
+            if (!(try self.isDefEq(pi.binderType, arg_type))) {
+                return KernelError.AppTypeMismatch;
+            }
+        }
         return self.es.substLooseBvars(pi.body, 0, &.{app.arg});
     }
 
     pub fn inferLambda(self: *Self, e: Expr, check: bool) KernelError!Expr {
         std.debug.assert(e.isLambda());
-        if (check) @panic("not yet implemented");
+        // TODO: treat chain of lambdas 
         const lam = self.em.getLambda(e);
         // fun a:A => e should have type pi a:A => inferType(e)
+        if (check) {
+            const binderType_type = try self.inferType(lam.binderType, check);
+            _ = try self.ensureSort(binderType_type);
+        }
         self.bvar_ctx.append(lam.binderType); // register bvar in local ctx
         defer _ = self.bvar_ctx.pop();
         const body_type = try self.inferType(lam.body, check);
@@ -244,7 +258,7 @@ pub const TypeChecker = struct {
 
     pub fn inferPi(self: *Self, e: Expr, check: bool) KernelError!Expr {
         std.debug.assert(e.isPi());
-        if (check) @panic("not yet implemented");
+        // TODO: treat chain of lambdas
         const pi = self.em.getPi(e);
         // If e is pi a:A => body, and A: sort u and body: sort v,
         // then should e: Sort (imax(u, v))
@@ -275,4 +289,113 @@ pub const TypeChecker = struct {
         else { return KernelError.ExpectedSort; }
     }
 
+    /// Attempt to prove that two given expressions are definitionally equal.
+    /// We assume that the expressions are type-checked already.
+    /// Return true on success. 
+    pub fn isDefEq(self: *Self, e1: Expr, e2: Expr) KernelError!bool {
+        if (e1.equal(e2)) return true;
+        
+        var e1_n = self.whnf(e1);
+        var e2_n = self.whnf(e2);
+        if (e1_n.equal(e2_n)) return true;
+
+        // If the expressions are proofs of the same proposition, they are defeq.
+        if (try self.isDefEqProofs(e1_n, e2_n)) return true;
+
+        // at this point different expr kinds mean that they are not equal
+        if (e1_n.kind() != e2_n.kind()) return false;
+        switch (e1_n.kind()) {
+            .bvar => {
+                std.debug.assert(e1_n.bvarId() != e2_n.bvarId());
+                return false;
+            },
+            .sort => {
+                std.debug.assert(e1_n.level() != e2_n.level());   
+                return self.isDefEqSort(e1_n, e2_n);
+            },
+            .cnst => return self.isDefEqConst(e1_n, e2_n),
+            .app => return try self.isDefEqApp(e1_n, e2_n),
+            .lambda => return try self.isDefEqLambda(e1_n, e2_n),
+            .forallE => return try self.isDefEqPi(e1_n, e2_n)
+        }
+
+    }
+
+    /// Proof irrelevance: Two expr's with propositional types
+    /// are defeq if their types are defeq (i.e. they are proofs of defeq propositions).
+    fn isDefEqProofs(self: *Self, e1: Expr, e2: Expr) KernelError!bool {
+        const e1_type = try self.inferType(e1, false);
+        if (!(try self.isProposition(e1_type))) {
+            return false;
+        }
+        const e2_type = try self.inferType(e2, false);
+        // Don't need to check that e2 is a Prop type, because isDefEq does that already
+        // if (!(try self.isProposition(e2_type))) {
+        //     return false;
+        // }
+        return try self.isDefEq(e1_type, e2_type);
+    }
+
+    /// Determines whether an expr has type `Prop`, i.e. is a proposition.
+    /// Assumes `e` is type-correct.
+    pub fn isProposition(self: *Self, e: Expr) KernelError!bool {
+        const e_type_n = self.whnf(try self.inferType(e, false));
+        return e_type_n.equal(self.es.mkProp());
+    }
+
+    /// Determines whether an expr has a propositional type, i.e. is a proof.
+    /// Assumes `e` is type-correct.
+    pub fn isProof(self: *Self, e: Expr) KernelError!bool {
+        const e_type = try self.inferType(e, false);
+        return try self.isProposition(e_type);
+    }
+
+    /// Two sort's are defeq if we can show that their levels are equal.
+    fn isDefEqSort(self: *Self, e1: Expr, e2: Expr) bool {
+        std.debug.assert(e1.isSort() and e2.isSort());
+        return self.lm.equal(e1.level(), e2.level());
+    }
+
+    /// Two const's are defeq if their names are the same and their levels 
+    /// can be shown to be equal.
+    fn isDefEqConst(self: *Self, e1: Expr, e2: Expr) bool {
+        std.debug.assert(e1.isConst() and e2.isConst());
+        const c1 = self.em.getConst(e1);
+        const c2 = self.em.getConst(e2);
+        if (c1.constName != c2.constName) return false;
+        if (c1.levels.len != c2.levels.len) return false;
+        for (c1.levels, 0..) |lvl1, i| {
+            const lvl2 = c2.levels[i];
+            if (!self.lm.equal(lvl1, lvl2)) return false;
+        }
+        return true;
+    }
+
+    /// Two lambda's are defeq if both binderType and body are defeq.
+    fn isDefEqLambda(self: *Self, e1: Expr, e2: Expr) KernelError!bool {
+        std.debug.assert(e1.isLambda() and e2.isLambda());
+        const lam1 = self.em.getLambda(e1);
+        const lam2 = self.em.getLambda(e2);
+        return try self.isDefEq(lam1.binderType, lam2.binderType) and
+            try self.isDefEq(lam1.body, lam2.body);
+    }
+
+    /// Two pi's are defeq if both binderType and body are defeq.
+    fn isDefEqPi(self: *Self, e1: Expr, e2: Expr) KernelError!bool {
+        std.debug.assert(e1.isPi() and e2.isPi());
+        const pi1 = self.em.getPi(e1);
+        const pi2 = self.em.getPi(e2);
+        return try self.isDefEq(pi1.binderType, pi2.binderType) and
+            try self.isDefEq(pi1.body, pi2.body);
+    }
+
+    /// Two app's are defeq if both function and argument are defeq.
+    fn isDefEqApp(self: *Self, e1: Expr, e2: Expr) KernelError!bool {
+        std.debug.assert(e1.isApp() and e2.isApp());
+        const app1 = self.em.getApp(e1);
+        const app2 = self.em.getApp(e2);
+        return try self.isDefEq(app1.fun, app2.fun) and
+            try self.isDefEq(app1.arg, app2.arg);
+    }
+    
 };

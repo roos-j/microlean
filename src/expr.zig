@@ -32,6 +32,7 @@ pub const Expr = packed struct {
     pub inline fn isApp(e: Expr) bool { return e.kind() == .app; }
     pub inline fn isLambda(e: Expr) bool { return e.kind() == .lambda; }
     pub inline fn isPi(e: Expr) bool { return e.kind() == .forallE; }
+    pub inline fn isProp(e: Expr) bool { return e.kind() == .sort and e.level() == 0; }
 
     pub inline fn hasLevelParam(e: Expr) bool { return e._has_level_param; }
 
@@ -176,7 +177,7 @@ pub const ExprContent = union(ExprKind) {
 pub const ExprData = packed struct {
     // same 64bit layout as in Lean 4 kernel
     hash: u32, // Lower 32bit of hash
-    approx_depth: u8,
+    approx_depth: u8, // TODO: make use of this
     _reserved: u3 = 0, // unimplemented Lean 4 features
     has_level_param: bool, // Stored in `Expr` but still needed here for cached Expr's
     loose_bvar_range: u20, // max. de Brujin index + 1
@@ -583,8 +584,17 @@ pub const ExprStore = struct {
         return .{ ._kind = .sort, 
             ._has_level_param = has_param, 
             .data = .{.lvl = lvl}, 
-            ._storeId = self.storeId };
+            ._storeId = if (has_param) self.storeId else 0 };
+        // Not sure about storeId
         // return self.cache(.{ .sort = lvl });
+    }
+
+    pub fn mkProp(self: *Self) Expr {
+        std.debug.assert(self.isOpen);
+        return .{ ._kind = .sort, 
+            ._has_level_param = false,
+            .data =.{.lvl = 0},
+            ._storeId = 0 }; // Lives in global store, so always returns the same value
     }
 
     /// Make a `const` without level parameters
@@ -593,7 +603,7 @@ pub const ExprStore = struct {
         return .{ ._kind = .cnst, 
             ._has_level_param = false, 
             .data = .{ .name = declName }, 
-            ._storeId = self.storeId };
+            ._storeId = self.storeId }; // TODO: Determine in which store atomic Expr's should live
     }
 
     pub fn mkConst(self: *Self, declName: Name, us: []const Level) Expr {

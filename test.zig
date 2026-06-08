@@ -363,6 +363,33 @@ test "TypeChecker.unfoldDefinition" {
     const True_whnf = s.mkForallE(0, False, False);
     try std.testing.expect(tc.whnf(True) == True_whnf);
 
+    // True: Prop
     const True_type = try tc.inferType(True, false);
     try std.testing.expect(True_type == Prop);
+
+    // Prop: Sort 1
+    const Prop_type = try tc.inferType(Prop, false);
+    const Type = s.mkSort(lm.mkOne());
+    try std.testing.expect(Prop_type == Type);
+
+    // const cnIdProp: Name = 5;
+    const IdProp = s.mkLambda(nA, Prop, s.mkBvar(0));
+    const IdProp_type = try tc.inferType(IdProp, false);
+    // fun A:Prop => A: Prop => Prop
+    try std.testing.expect(IdProp_type == s.mkPi(nA, Prop, Prop));
+
+    const nX: Name = 6;
+    const na: Name = 7;
+    // Id1 = fun X:Type => fun a:X => a
+    // Id1 Prop: Pi a:Prop => Prop
+    const Id1 = s.mkLambda(nX, Type, s.mkLambda(na, s.mkBvar(0), s.mkBvar(0)));
+    const Id1_type = try tc.inferType(Id1, false);
+    const cnId1: Name = 8;
+    env.addUnchecked(cnId1, &.{}, Id1_type, Id1);
+    const Id1_const = s.mkConst(cnId1, &.{});
+    const Id1_Prop = s.mkApp(Id1_const, Prop);
+    const Id1_Prop_type = try tc.inferType(Id1_Prop, false);
+    try std.testing.expect(Id1_Prop_type.isPi());
+    try std.testing.expect(em.getPi(Id1_Prop_type).binderType == Prop);
+    try std.testing.expect(em.getPi(Id1_Prop_type).body == Prop);
 }
