@@ -204,6 +204,7 @@ pub const TypeChecker = struct {
     pub fn inferSort(self: *Self, e: Expr, check: bool) Expr {
         std.debug.assert(e.isSort());
         if (check) @panic("not yet implemented");
+        if (e.hasLevelParam()) @panic("not yet implemented");
         return self.es.mkSort(self.lm.mkSucc(e.level()));
     }
 
@@ -211,6 +212,7 @@ pub const TypeChecker = struct {
     pub fn inferConst(self: *Self, e: Expr, check: bool) KernelError!Expr {
         std.debug.assert(e.isConst());
         if (check) @panic("not yet implemented");
+        if (e.hasLevelParam()) @panic("not yet implemented");
         if (self.env.find(e.constName())) |info| {
             return info.getType();
         } else {
@@ -221,22 +223,39 @@ pub const TypeChecker = struct {
     pub fn inferApp(self: *Self, e: Expr, check: bool) KernelError!Expr {
         std.debug.assert(e.isApp());
         if (check) @panic("not yet implemented");
+        // TODO: treat chain of apps at once
         const app = self.em.getApp(e);
         var fun_type = try self.inferType(app.fun, check);
-        fun_type = try ensurePi(fun_type);
-        // self.es.substLooseBvars()
-        // TODO
+        fun_type = try self.ensurePi(fun_type);
+        const pi = self.em.getPi(fun_type);
+        return self.es.substLooseBvars(pi.body, 0, &.{app.arg});
     }
 
-    // pub fn inferLambda(self: *Self, e: Expr, check: bool) KernelError!Expr {
-    //     std.debug.assert(e.isLambda());
-    //     // TODO
-    // }
+    pub fn inferLambda(self: *Self, e: Expr, check: bool) KernelError!Expr {
+        std.debug.assert(e.isLambda());
+        if (check) @panic("not yet implemented");
+        const lam = self.em.getLambda(e);
+        // fun a:A => e should have type pi a:A => inferType(e)
+        self.bvar_ctx.append(lam.binderType); // register bvar in local ctx
+        defer _ = self.bvar_ctx.pop();
+        const body_type = try self.inferType(lam.body, check);
+        return self.es.mkPi(lam.binderName, lam.binderType, body_type);
+    }
 
-    // pub fn inferPi(self: *Self, e: Expr, check: bool) KernelError!Expr {
-    //     std.debug.assert(e.isPi());
-    //     // TODO
-    // }
+    pub fn inferPi(self: *Self, e: Expr, check: bool) KernelError!Expr {
+        std.debug.assert(e.isPi());
+        if (check) @panic("not yet implemented");
+        const pi = self.em.getPi(e);
+        // If e is pi a:A => body, and A: sort u and body: sort v,
+        // then should e: Sort (imax(u, v))
+        var sort_arg_type = try self.inferType(pi.binderType, check);
+        sort_arg_type = try self.ensureSort(sort_arg_type);
+        self.bvar_ctx.append(pi.binderType); // register bvar in local ctx
+        defer _ = self.bvar_ctx.pop();
+        var body_type = try self.inferType(pi.body, check);
+        body_type = try self.ensureSort(body_type);
+        return self.es.mkSort(self.lm.mkIMax(sort_arg_type.level(), body_type.level()));
+    }
 
     /// Ensures that `e` is a dependent function type,
     /// possibly after passing to whnf. Return a pi or throw an error.

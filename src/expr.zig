@@ -186,23 +186,24 @@ pub const ExprData = packed struct {
         if (range > std.math.maxInt(u20)) @panic("too many bound variables");
     }
 
-    // Obsolete now?
-    fn mkBvar(content: ExprContent) ExprData {
-        const range = content.bvar + 1;
-        checkBvarRange(range);
-        return .{ .hash = undefined,
-            .approx_depth = 0,
-            .has_level_param = false,
-            .loose_bvar_range = @intCast(range) };
-    }
+    // // Obsolete now?
+    // fn mkBvar(content: ExprContent) ExprData {
+    //     unreachable;
+    //     const range = content.bvar + 1;
+    //     checkBvarRange(range);
+    //     return .{ .hash = undefined,
+    //         .approx_depth = 0,
+    //         .has_level_param = false,
+    //         .loose_bvar_range = @intCast(range) };
+    // }
 
-    // Obsolete now?
-    fn mkSort(content: ExprContent, lm: *const LevelManager) ExprData {
-        return .{ .hash = undefined,
-            .approx_depth = 0,
-            .has_level_param = lm.hasParam(content.sort),
-            .loose_bvar_range = 0 };
-    }
+    // // Obsolete now?
+    // fn mkSort(content: ExprContent, lm: *const LevelManager) ExprData {
+    //     return .{ .hash = undefined,
+    //         .approx_depth = 0,
+    //         .has_level_param = lm.hasParam(content.sort),
+    //         .loose_bvar_range = 0 };
+    // }
 
     fn mkConst(content: ExprContent, lm: *const LevelManager) ExprData {
         var has_param = false;
@@ -617,6 +618,11 @@ pub const ExprStore = struct {
     pub fn mkForallE(self: *Self, binderName: Name, binderType: Expr, body: Expr) Expr {
       std.debug.assert(self.isOpen);
       return self.cache(.{ .forallE = .{ .binderName = binderName, .binderType = binderType, .body = body } });
+    }
+
+    /// Synonym of `mkForallE`
+    pub fn mkPi(self: *Self, binderName: Name, binderType: Expr, body: Expr) Expr {
+        return self.mkForallE(binderName, binderType, body);
     }
 
     /// Make a function application with multiple arguments in forward order: (f args[0]) args[1] ..

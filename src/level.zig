@@ -3,12 +3,13 @@ const Name = @import("common.zig").Name;
 const Buffer = @import("common.zig").Buffer;
 const oom = @import("common.zig").oom;
 
-// Universe level
+// Universe level. 
+// TODO: Encode explicit/implicit and whether must be non-zero
 pub const Level = u32;
 
 pub const LevelMax = struct { lhs: Level, rhs: Level };
 
-pub const LevelKind = enum { zero, succ, max, param };
+pub const LevelKind = enum { zero, succ, max, imax, param };
 
 pub const level_zero: Level = 0;
 pub const level_one: Level = 1;
@@ -17,6 +18,7 @@ pub const LevelContent = union(LevelKind) {
     zero: void,
     succ: Level,
     max: LevelMax,
+    imax: LevelMax,
     param: Name,
 
     pub inline fn kind(self: LevelContent) LevelKind {
@@ -24,14 +26,15 @@ pub const LevelContent = union(LevelKind) {
     }
 };
 
-// Optimizations to add later: normalization, has_param, depth, explicit_offset
+// TODO: refactor
 pub const LevelNode = struct { 
     content: LevelContent, 
     depth: u32, 
     offset_base: Level, 
     offset: u32,
     has_param: bool, 
-    is_explicit: bool
+    is_explicit: bool,
+    nonzero: bool // true if guaranteed to be nonzero
 };
 
 pub const LevelOffset = struct { lvl: Level, offset: u32 };
@@ -59,8 +62,8 @@ pub const LevelManager = struct {
     }
 
     fn initZeroOne(self: *Self) void {
-        const zero: LevelNode = .{ .content = .zero, .depth = 0, .has_param = false, .offset = 0, .offset_base = 0, .is_explicit = true };
-        const one: LevelNode = .{ .content = .{ .succ = 0 }, .depth = 1, .has_param = false, .offset = 1, .offset_base = 0, .is_explicit = true };
+        const zero: LevelNode = .{ .content = .zero, .depth = 0, .has_param = false, .offset = 0, .offset_base = 0, .is_explicit = true, .nonzero = false };
+        const one: LevelNode = .{ .content = .{ .succ = 0 }, .depth = 1, .has_param = false, .offset = 1, .offset_base = 0, .is_explicit = true, .nonzero = true };
         self.insertNode(zero);
         self.insertNode(one);
         // We don't add these to hash map
@@ -119,6 +122,11 @@ pub const LevelManager = struct {
         return self.get(self.getNode(lvl).offset_base).kind();
     }
 
+    // Return true if level is guaranteed to be not zero
+    pub fn isNonzero(self: *const Self, lvl: Level) bool {
+        return self.getNode(lvl).nonzero;
+    }
+
     pub fn mkZero(self: *Self) Level {
         _ = self;
         return 0;
@@ -130,7 +138,7 @@ pub const LevelManager = struct {
     }
 
     pub fn mkSucc(self: *Self, lvl: Level) Level {
-        if (lvl == 0) return 1;
+        if (lvl == 0) return self.mkOne();
         const content: LevelContent = .{ .succ = lvl };
         const result = self.cache(content);
         const id: Level = result.value_ptr.*;
@@ -140,7 +148,8 @@ pub const LevelManager = struct {
             .depth = self.getDepth(lvl)+1, .has_param = self.hasParam(lvl), 
             .offset_base = self.getOffsetBase(lvl), 
             .offset = self.getOffset(lvl)+1,
-            .is_explicit = self.isExplicit(lvl) };
+            .is_explicit = self.isExplicit(lvl),
+            .nonzero = true };
         self.insertNode(node);
         return id;
     }
@@ -167,7 +176,37 @@ pub const LevelManager = struct {
             .has_param = self.hasParam(lhs) or self.hasParam(rhs),
             .offset = 0,
             .offset_base = id,
-            .is_explicit = false};
+            .is_explicit = false,
+            .nonzero = self.isNonzero(lhs) or self.isNonzero(rhs) };
+        self.insertNode(node);
+        return id;
+    }
+
+    pub fn mkIMax(self: *Self, lhs: Level, rhs: Level) Level {
+        if (self.isNonzero(rhs)) {
+            return self.mkMax(lhs, rhs);
+        } else if (rhs == 0) {
+            return 0;
+        } else if (lhs == 0) {
+            return rhs;
+        } else if (lhs == rhs) {
+            return lhs;
+        }
+        std.debug.assert(!self.isExplicit(lhs) or !self.isExplicit(rhs));
+        // ToDo: add more initial simplification?
+        const content: LevelContent = .{ .imax = .{ .lhs = lhs, .rhs = rhs } };
+        const result = self.cache(content);
+        const id: Level = result.value_ptr.*;
+        if (result.found_existing) {
+            return id;
+        }
+        const node: LevelNode = .{ .content = content,
+            .depth = @max(self.getDepth(lhs), self.getDepth(rhs)) + 1,
+            .has_param = self.hasParam(lhs) or self.hasParam(rhs),
+            .offset = 0,
+            .offset_base = id,
+            .is_explicit = false,
+            .nonzero = self.isNonzero(rhs) };
         self.insertNode(node);
         return id;
     }
@@ -182,7 +221,8 @@ pub const LevelManager = struct {
         const node: LevelNode = .{ .content = content,
             .depth = 0, .has_param = true,
             .offset = 0, .offset_base = id,
-            .is_explicit = false };
+            .is_explicit = false,
+            .nonzero = false };
         self.insertNode(node);
         return id;
     }
@@ -198,6 +238,13 @@ pub const LevelManager = struct {
             .zero, .succ => unreachable,
             .max => |m| {
                 std.debug.print("max(", .{});
+                self.printLevel(m.lhs);
+                std.debug.print(", ", .{});
+                self.printLevel(m.rhs);
+                std.debug.print(")", .{});
+            },
+            .imax => |m| {
+                std.debug.print("imax(", .{});
                 self.printLevel(m.lhs);
                 std.debug.print(", ", .{});
                 self.printLevel(m.rhs);

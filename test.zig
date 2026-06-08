@@ -362,4 +362,7 @@ test "TypeChecker.unfoldDefinition" {
 
     const True_whnf = s.mkForallE(0, False, False);
     try std.testing.expect(tc.whnf(True) == True_whnf);
+
+    const True_type = try tc.inferType(True, false);
+    try std.testing.expect(True_type == Prop);
 }
