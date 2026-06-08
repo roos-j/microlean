@@ -21,7 +21,7 @@ const TestCtx = struct {
         const allocator = std.testing.allocator;
         const lm = LevelManager.create(allocator);
         const em = ExprManager.create(allocator, lm);
-        const env = Environment.create(allocator);
+        const env = Environment.create(allocator, em);
         return .{
             .allocator = allocator,
             .lm = lm,
@@ -38,7 +38,7 @@ const TestCtx = struct {
     }
 };
 
-test "LevelTest" {
+test "Level" {
     var ctx = TestCtx.init();
     defer ctx.deinit();
     const mgr = ctx.lm;
@@ -85,7 +85,7 @@ test "LevelTest" {
     try std.testing.expect(!mgr.equal(mgr.mkSucc(param0), mgr.mkSucc(mgr.mkParam(1))));
 }
 
-test "ExprTest" {
+test "Expr" {
     try std.testing.expect(@bitSizeOf(Expr) == 64);
 
     var ctx = TestCtx.init();
@@ -318,11 +318,9 @@ test "TypeChecker.whnf_core" {
 
     // app (fun x:X => #1) #2 = #0
     try std.testing.expect(tc.whnfCore(s.mkApp(s.mkLambda(nf, X, s.mkBvar(1)), s.mkBvar(2))).bvarId() == 0);
-
-    // app (fun x:X => )
 }
 
-test "TypeChecker.unfoldDefinition" {
+test "TypeChecker" {
     var ctx = TestCtx.init();
     defer ctx.deinit();
     const s = ctx.gs;
@@ -332,7 +330,7 @@ test "TypeChecker.unfoldDefinition" {
 
     const cnFalse = 1;
     const Prop = s.mkSort(lm.mkZero());
-    env.addAxiom(cnFalse, &.{}, Prop);
+    try env.addAxiom(cnFalse, &.{}, Prop);
     const False = s.mkConst(cnFalse, &.{});
     try std.testing.expect(!env.find(cnFalse).?.hasValue()); // constant has no value field
 
@@ -392,4 +390,111 @@ test "TypeChecker.unfoldDefinition" {
     try std.testing.expect(Id1_Prop_type.isPi());
     try std.testing.expect(em.getPi(Id1_Prop_type).binderType == Prop);
     try std.testing.expect(em.getPi(Id1_Prop_type).body == Prop);
+
+    // Test `isDefEq`
+    try std.testing.expect(try tc.isDefEq(True, True_whnf));
+    try std.testing.expect(!(try tc.isDefEq(True, False)));
+    try std.testing.expect(try tc.isProposition(True));
+    
+    const cnNotTrue = 9;
+    const NotTrue = s.mkApp(Not, True);
+    env.addUnchecked(cnNotTrue, &.{}, Prop, NotTrue);
+    const NotTrue_const = s.mkConst(cnNotTrue, &.{});
+    try std.testing.expect(try tc.isProposition(NotTrue));
+    try std.testing.expect(try tc.isDefEq(NotTrue_const, NotTrue));
+}
+
+test "TypeChecker.Thm" {
+    // Some propositional nonsense
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    const s = ctx.gs;
+    // const lm = ctx.lm;
+    const em = ctx.em;
+    const env = ctx.env;
+
+    const b0 = s.mkBvar(0);
+    const b1 = s.mkBvar(1);
+
+    const Prop = s.mkProp();
+    const nFalse = env.mkFreshName();
+    try env.addAxiom(nFalse, &.{}, Prop);
+    const False = s.mkConst(nFalse, &.{});
+
+    const nNot = env.mkFreshName();
+    const eNot = s.mkLambda(0, Prop, s.mkPi(0, b0, False));
+    try env.add(nNot, &.{}, null, eNot);
+    const Not = s.mkConst(nNot, &.{});
+
+    const nTrue = env.mkFreshName();
+    const eTrue = s.mkApp(Not, False);
+    try env.add(nTrue, &.{}, null, eTrue);
+    const True = s.mkConst(nTrue, &.{});
+
+    // Thm. 0 is just `True`
+    const tThm0 = True;
+    const nThm0 = env.mkFreshName();
+    // Proof of Thm0: fun x:False => x
+    const pfThm0 = s.mkLambda(0, False, b0);
+    try env.add(nThm0, &.{}, tThm0, pfThm0);
+
+    const nOr = env.mkFreshName();
+    // Or A B = Not A -> B
+    const eOr = s.mkLambda(0, Prop, s.mkLambda(0, Prop, s.mkPi(0, s.mkApp(Not, b1), b1)));
+    try env.add(nOr, &.{}, null, eOr);
+    const Or = s.mkConst(nOr, &.{});
+
+    // Thm. 1 is `Or False True`
+    const tThm1 = s.mkApp(s.mkApp(Or, False), True);
+    const nThm1 = env.mkFreshName();
+    // Proof of Thm. 1: fun a:True, #0
+    const pfThm1 = s.mkLambda(0, True, b0);
+    try env.add(nThm1, &.{}, tThm1, pfThm1);
+
+    const tc: *TypeChecker = .create(ctx.allocator, em, s, env);
+    defer tc.destroy();
+    // True = False->False
+    try std.testing.expect(try tc.isDefEq(True, s.mkPi(0, False, False)));
+    // False: Prop
+    try std.testing.expect(try tc.isProposition(False));
+    // Not equals its definition
+    try std.testing.expect(try tc.isDefEq(Not, eNot));
+    // Not: Prop->Prop
+    try std.testing.expect(try tc.isDefEq(s.mkPi(0, Prop, Prop), try tc.checkType(Not)));
+}
+
+test "Nat" { // Defining the natural numbers
+    var ctx = TestCtx.init();
+    defer ctx.deinit();
+    const s = ctx.gs;
+    const lm = ctx.lm;
+    const em = ctx.em;
+    const env = ctx.env;
+
+    const tc: *TypeChecker = .create(ctx.allocator, em, s, env);
+    defer tc.destroy();
+
+    const Type = s.mkSort(lm.mkOne());
+
+    // axiom Nat: Type
+    const nNat = env.mkFreshName();
+    try env.addAxiom(nNat, &.{}, Type);
+    const Nat = s.mkConst(nNat, &.{});
+
+    // axiom Zero: Nat
+    const nZero = env.mkFreshName();
+    try env.addAxiom(nZero, &.{}, Nat);
+    const Zero = s.mkConst(nZero, &.{});
+
+    // axiom Succ: Nat -> Nat
+    const nSucc = env.mkFreshName();
+    try env.addAxiom(nSucc, &.{}, s.mkPi(0, Nat, Nat));
+    const Succ = s.mkConst(nSucc, &.{});
+
+    const One = s.mkApp(Succ, Zero);
+    const Two = s.mkApp(Succ, One);
+
+    try std.testing.expect((try tc.checkType(Two)) == Nat);
+
+    // ToDo: define induction
 }

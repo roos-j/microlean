@@ -9,9 +9,11 @@ const LevelManager = @import("level.zig").LevelManager;
 const Environment = @import("environment.zig").Environment;
 const ConstantInfo = @import("environment.zig").ConstantInfo;
 
-const KernelError = error{
+pub const KernelError = error{
     IllegalLooseBvars, 
     UnknownConstant,
+    ConstantAlreadyDeclared,
+    DeclTypeMismatch, // Declared type does not match inferred type
     ExpectedSort, // Expr was expected to be a `sort`
     ExpectedPi, // Expr was expected to be a function type
     AppTypeMismatch, // App argument type does not match expected type
@@ -190,6 +192,12 @@ pub const TypeChecker = struct {
             .lambda => self.inferLambda(e, check),
             .forallE => self.inferPi(e, check)
         };
+    }
+
+    /// Check that an expression is well-formed and has a well-formed type.
+    /// Return type or throw error.
+    pub fn checkType(self: *Self, e: Expr) KernelError!Expr {
+        return try self.inferType(e, true);
     }
 
     /// Fetch type of bvar from local context.

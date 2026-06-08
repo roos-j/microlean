@@ -3,6 +3,10 @@ const builtin = @import("builtin");
 const Name = @import("common.zig").Name;
 const oom = @import("common.zig").oom;
 const Expr = @import("expr.zig").Expr;
+const ExprStore = @import("expr.zig").ExprStore;
+const ExprManager = @import("expr.zig").ExprManager;
+const KernelError = @import("type_checker.zig").KernelError;
+const TypeChecker = @import("type_checker.zig").TypeChecker;
 
 pub const AxiomVal = struct {
     name: Name,
@@ -94,12 +98,23 @@ pub const Environment = struct {
 
     allocator: std.mem.Allocator,
     constants: std.hash_map.AutoHashMap(Name, ConstantInfo),
+    lastName: Name, // Tracks the constant name that was last assigned
+    em: *ExprManager,
 
-    pub fn create(allocator: std.mem.Allocator) *Self {
+    pub fn create(allocator: std.mem.Allocator, em: *ExprManager) *Self {
         const self = allocator.create(Environment) catch oom();
+        // TODO: Streamline interdependencies
         self.* = .{ .allocator = allocator, 
-            .constants = .init(allocator) };
+            .constants = .init(allocator),
+            .em = em,
+            .lastName = 0 };
         return self;
+    }
+
+    // Make an unused constant name, incrementing internal counter.
+    pub fn mkFreshName(self: *Self) Name {
+        self.lastName += 1;
+        return self.lastName;
     }
 
     pub fn destroy(self: *Self) void {
@@ -123,15 +138,53 @@ pub const Environment = struct {
     } 
 
     /// Add an axiom to the environment.
-    pub fn addAxiom(self: *Self, name: Name, level_params: []const Name, typ: Expr) void {
+    pub fn addAxiom(self: *Self, name: Name, level_params: []const Name, typ: Expr) KernelError!void {
         const info: ConstantInfo = .{ .axiomInfo = .{ .name = name, .levelParams = level_params, .type = typ } };
+        try self.checkAxiom(typ);
         self.constants.put(name, info) catch oom();   
     }
 
-    // /// Add a checked declaration to the environment
-    // pub fn add(self: *Self, name: Name, certified_decl: DeclarationContent) !void {
-    //     if (self.declarations.contains(name)) {
-    //     }
-    // }   
+    /// Type-check and add a declaration to the environment. If no type is provided, it is inferred.
+    pub fn add(self: *Self, name: Name, level_params: []const Name, typ: ?Expr, value: Expr) KernelError!void {
+        if (self.constants.contains(name)) {
+            return KernelError.ConstantAlreadyDeclared;
+        }
+        const t = try self.checkConstant(typ, value);
+        const info: ConstantInfo = .{ .defnInfo = .{ .name = name,
+            .levelParams = level_params, .type = t, .value = value } };
+        self.constants.put(name, info) catch oom();
+    }
+
+    /// Type-check a proposed axiom.
+    fn checkAxiom(self: *Self, typ: Expr) KernelError!void {
+        const tc: *TypeChecker = .create(self.allocator, self.em, self.em.getGlobalStore(), self);
+        defer tc.destroy();
+        const type_type = try tc.checkType(typ);
+        _ = try tc.ensureSort(type_type);
+    }
+
+    /// Type-check a proposed constant before adding it to the environment.
+    /// Return declared type, or inferred type if no declared type.
+    fn checkConstant(self: *Self, typ: ?Expr, value: Expr) KernelError!Expr {
+        // TODO: Make temporary stores work - expr's that are part of declaration need to be promoted
+        // const ts: ExprStore = self.em.createStore();
+        // defer self.em.closeStore(ts.storeId);
+        const tc: *TypeChecker = .create(self.allocator, self.em, self.em.getGlobalStore(), self);
+        defer tc.destroy();
+        // check that declared value has a well-defined type
+        const val_type = try tc.checkType(value);
+        if (typ) |decl_type| {
+            // check that declared type is a well-formed type
+            const type_type = try tc.checkType(decl_type);
+            _ = try tc.ensureSort(type_type);
+            // check that declared type matches inferred type
+            if (!(try tc.isDefEq(decl_type, val_type))) {
+                return KernelError.DeclTypeMismatch;
+            }
+            return decl_type;
+        } else {
+            return val_type;
+        }
+    }
 
 };
