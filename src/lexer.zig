@@ -25,6 +25,7 @@ pub const TokenKind = enum {
     lparen, // (
     rparen, // ) 
     colon, // :
+    plus, // +
 
     coloneq, // :=
     to, // → or -> 
@@ -49,10 +50,7 @@ const builtinAtoms = std.StaticStringMap(TokenKind).initComptime(.{
     .{ "∀", .forall },
     .{ "Π", .forall },
     .{ "↦", .mapsto },
-    .{ "=>", .mapsto },
-    .{ ":=", .coloneq },
     .{ "→", .to },
-    .{ "->", .to }
 });
 
 fn isIdentAscii(c: u8) bool {
@@ -69,6 +67,7 @@ fn isIdentCont(c: u8) bool {
 }
 
 fn isWhitespace(c: u8) bool {
+    // Actual Lean rejects '\t' but we allow it
     return c == ' ' or c == '\t' or c == '\n' or c == '\r';
 }
 
@@ -158,6 +157,7 @@ pub const Lexer = struct {
         switch (c) {
             '(' => { self.skip(); return self.mkToken(.lparen); },
             ')' => { self.skip(); return self.mkToken(.rparen); },
+            '+' => { self.skip(); return self.mkToken(.plus); },
             ':' => return self.handleColon(),
             '-' => return self.handleDash(),
             '=' => return self.handleEq(),
@@ -266,6 +266,8 @@ pub const Lexer = struct {
     }
 
     /// Skip ahead until non-whitespace detected
+    /// TODO: Later store some indentation info. 
+    /// Lean syntax also has some indentation awareness, we currently ignore that.
     fn whitespace(self: *Self) void {
         while (true) {
             while (isWhitespace(self.peek(0))) self.skip();

@@ -14,5 +14,23 @@ test "Lexer" {
     var l = Lexer.init(src);
     defer l.deinit();
 
-    
+    var t = l.next();
+    try std.testing.expect(t.kind == .axiom);
+    try std.testing.expect(std.mem.eql(u8, t.lexeme(&l), "axiom"));
+    try std.testing.expect(std.mem.eql(u8, t.leading(&l), ""));
+    try std.testing.expect(!t.has_newline);
+
+    t = l.next();
+    try std.testing.expect(t.kind == .ident);
+    try std.testing.expect(std.mem.eql(u8, t.token(&l), "Nat"));
+    try std.testing.expect(std.mem.eql(u8, t.lexeme(&l), " Nat"));
+
+    t = l.next();
+    try std.testing.expect(t.kind == .colon);
+    try std.testing.expect(std.mem.eql(u8, t.lexeme(&l), " :"));
+
+    t = l.next();
+    t = l.next();
+    try std.testing.expect(t.kind == .axiom);
+    try std.testing.expect(t.has_newline);
 }
