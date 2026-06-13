@@ -119,6 +119,13 @@ pub const Token = struct {
     pub fn leadingNewline(t: Token) bool {
         return t.has_newline;
     }
+
+    /// Return value of numlit (must be u64)
+    pub fn numlitValue(t: Token, l: *Lexer, comptime uintType: type) !uintType {
+        std.debug.assert(t.kind == .numlit);
+        const s = t.token(l);
+        return try std.fmt.parseUnsigned(uintType, s, 10);
+    }
 };
 
 // pub const LexerState = enum {
@@ -144,14 +151,17 @@ pub const Lexer = struct {
     
     cur_t_i: usize = 0,
     buf: Buffer(Token),
+    lines: Buffer(usize), // Store locations of new lines
 
     pub fn init(allocator: std.mem.Allocator, src: []const u8) Lexer {
         return .{ .src = src, .cur_t = undefined,
-            .buf = .init(allocator) };
+            .buf = .init(allocator),
+            .lines = .init(allocator) };
     }
 
     pub fn deinit(self: *Self) void {
         self.buf.deinit();
+        self.lines.deinit();
     }
 
     /// Read the token at given offset from current token index.
@@ -166,6 +176,37 @@ pub const Lexer = struct {
         const t = self.buf.get(self.cur_t_i);
         self.cur_t_i += 1;
         return t;
+    }
+
+    /// Return line number of given position in source by binary search.
+    pub fn lineNumber(self: *Self, pos: usize) usize {
+        var lower_bd = 0;
+        var upper_bd = self.lines.len();
+        while (upper_bd > lower_bd + 1) {
+            const mid = lower_bd + ((upper_bd - lower_bd) >> 1);
+            const lpos = self.lines.get(mid);
+            if (lpos < pos) lower_bd = mid
+            else if (lpos > pos) upper_bd = mid
+            else return mid + 1; // Newline character itself is counted as belonging to previovus line.
+        }
+        return upper_bd + 1;
+    }
+
+    test "lineNumber" {
+        const src = 
+            \\0123456
+            \\8 --
+            \\13
+            \\
+        ;
+        var l = Lexer.init(std.testing.allocator, src);
+        while (!l.next().isEOF()) {}
+        try std.testing.expect(l.lines.len() == 3);
+        try std.testing.expect(l.lineNumber(0) == 1);
+        try std.testing.expect(l.lineNumber(8) == 2);
+        try std.testing.expect(l.lineNumber(12) == 2);
+        try std.testing.expect(l.lineNumber(13) == 3);
+        try std.testing.expect(l.lineNumber(16) == 4);
     }
 
     // pub fn rewind(self: *Self, offset: usize) void {
@@ -371,7 +412,10 @@ pub const Lexer = struct {
     fn advance(self: *Self) u8 {
         if (self.cur >= self.src.len) return 0xFF;
         const c = self.src[self.cur];
-        if (c == '\n') self.cur_t.has_newline = true;
+        if (c == '\n') {
+            self.cur_t.has_newline = true;
+            self.lines.append(self.cur);
+        }
         self.cur += 1;
         return c;
     }
@@ -380,6 +424,7 @@ pub const Lexer = struct {
     fn peekFull(self: *Self) []const u8 {
         std.debug.assert(self.cur < self.src.len);
         const b: u8 = self.src[self.cur];
+        std.debug.assert(b >= 0x80); // meant to be called only on non-ascii bytes
         const len = std.unicode.utf8ByteSequenceLength(b) catch return self.handleutf8error();
         std.debug.assert(self.cur + len <= self.src.len);
         const res = self.src[self.cur..self.cur+len];
@@ -404,7 +449,7 @@ pub const Lexer = struct {
         utf8error();
     }
 
-    test "Lexer.advanceFull" {
+    test "advanceFull" {
         const src = "→∀=";
         var l = Lexer.init(std.testing.allocator, src);
         l.initToken();

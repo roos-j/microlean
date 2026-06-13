@@ -27,6 +27,7 @@ pub const LevelContent = union(LevelKind) {
 };
 
 // TODO: refactor
+// TODO: don't store succ in LevelContent, store chain of succ only as offset_base,offset pair
 pub const LevelNode = struct { 
     content: LevelContent, 
     depth: u32, 
@@ -152,6 +153,19 @@ pub const LevelManager = struct {
             .nonzero = true };
         self.insertNode(node);
         return id;
+    }
+
+    /// Make `lvl + offset`. TODO: Avoid succ chaining, store offset directly
+    pub fn mkOffset(self: *Self, lvl: Level, offset: u32) Level {
+        var res = lvl;
+        for (0..offset) |_|
+            res = self.mkSucc(res);
+        return res;
+    }
+
+    /// TODO: Avoid succ chaining
+    pub fn mkExplicit(self: *Self, val: u32) Level {
+        return self.mkOffset(self.mkZero(), val);
     }
 
     pub fn mkMax(self: *Self, lhs: Level, rhs: Level) Level {
