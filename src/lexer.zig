@@ -1,4 +1,6 @@
 const std = @import("std");
+const oom = @import("common.zig").oom;
+const Buffer = @import("common.zig").Buffer;
 
 /// TODO: handle properly
 pub fn utf8error() noreturn {
@@ -17,6 +19,8 @@ pub const TokenKind = enum {
     axiom,
     check,
     universe,
+    max,
+    imax,
     sort,
     prop,
     lambda,
@@ -41,6 +45,8 @@ const builtinAtoms = std.StaticStringMap(TokenKind).initComptime(.{
     .{ "axiom", .axiom },
     .{ "#check", .check },
     .{ "universe", .universe },
+    .{ "max", .max },
+    .{ "imax", .imax },
     .{ "import", .import },
     .{ "Sort", .sort },
     .{ "Prop", .prop },
@@ -135,17 +141,47 @@ pub const Lexer = struct {
     
     // state: LexerState = .init, // The lexer is a finite state machine
     cur_t: Token, // Used to keep state while reading token
+    
+    cur_t_i: usize = 0,
+    buf: Buffer(Token),
 
-    pub fn init(src: []const u8) Lexer {
-        return .{ .src = src, .cur_t = undefined };
+    pub fn init(allocator: std.mem.Allocator, src: []const u8) Lexer {
+        return .{ .src = src, .cur_t = undefined,
+            .buf = .init(allocator) };
     }
 
     pub fn deinit(self: *Self) void {
-        _ = self;   
+        self.buf.deinit();
+    }
+
+    /// Read the token at given offset from current token index.
+    pub fn lookahead(self: *Self, offset: usize) Token {
+        self.ensureBuf(offset);
+        return self.buf.get(self.cur_t_i + offset);
+    }
+
+    /// Return token at current position and advance token index.
+    pub fn next(self: *Self) Token {
+        self.ensureBuf(0);
+        const t = self.buf.get(self.cur_t_i);
+        self.cur_t_i += 1;
+        return t;
+    }
+
+    // pub fn rewind(self: *Self, offset: usize) void {
+    //     self.cur_t_i = @max(0, self.cur_t_i - offset);
+    // }
+
+    /// Ensure that token buffer is filled up to specified offset from current position.
+    fn ensureBuf(self: *Self, offset: usize) void {
+        const target = self.cur_t_i + offset;
+        while (target >= self.buf.len()) {
+            self.buf.append(self.nextCore());
+        }
     }
 
     // Read next token.
-    pub fn next(self: *Self) Token {
+    fn nextCore(self: *Self) Token {
         self.initToken();
         // if (self.isAtEnd()) return self.mkToken(.eof);
 
@@ -370,7 +406,7 @@ pub const Lexer = struct {
 
     test "Lexer.advanceFull" {
         const src = "→∀=";
-        var l = Lexer.init(src);
+        var l = Lexer.init(std.testing.allocator, src);
         l.initToken();
         try std.testing.expect(std.mem.eql(u8, l.advanceFull(), "→"));
         try std.testing.expect(std.mem.eql(u8, l.advanceFull(), "∀"));

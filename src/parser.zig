@@ -1,7 +1,12 @@
 const std = @import("std");
-const Lexer = @import("lexer.zig").Lexer;
-const Expr = @import("expr.zig").Expr;
+const oom = @import("common.zig").oom;
 const Buffer = @import("common.zig").Buffer;
+
+const Lexer = @import("lexer.zig").Lexer;
+const Token = @import("lexer.zig").Token;
+const Expr = @import("expr.zig").Expr;
+const LevelManager = @import("level.zig").LevelManager;
+const Level = @import("level.zig").Level;
 
 /// Parser for MicroLean
 /// We implement a simple recursive descent parser.
@@ -10,12 +15,12 @@ const Buffer = @import("common.zig").Buffer;
 /// file -> command*
 /// command -> declaration | cmd
 /// cmd -> "#check" term
-/// declaration -> "axiom" IDENT ':' term | "def" IDENT (":" term)? ":=" term
+/// declaration -> "axiom" IDENT ':' term | "def" IDENT (":" term)? ":=" term | "universe" IDENT | "import" IDENT
 ///
 /// term -> lambda | funType | sort
 /// 
 /// sort -> "Sort" level | "Prop"
-/// level -> ident | "max" level level | "imax" level level | numlit | level "+" numlit | "(" level ")"
+/// level -> ident | "max" level level | "imax" level level | NUMLIT | level "+" NUMLIT | "(" level ")"
 ///
 /// lambda -> "fun" binder "=>" term
 /// binder -> parenBinder+ | noParenBinder
@@ -46,9 +51,13 @@ pub const Term = packed struct {
 pub const Slice = packed struct {
     start: usize, // Start index
     end: usize, // End index
+
+    pub fn len(self: Slice) usize {
+        return self.end - self.start + 1;
+    }
 };
 
-pub const TermNode = union(TermKind) {
+pub const TermContent = union(TermKind) {
     lambda: TermBinder,
     pi: TermBinder,
     app: TermApp,
@@ -57,26 +66,54 @@ pub const TermNode = union(TermKind) {
     numlit: u64, // Actual Lean has no size restriction here
 };
 
+pub const TermNode = struct {
+    content: TermContent,
+    slice: Slice,
+};
+
 pub const TermApp = struct {
-    // TODO
+    fun: Term,
+    arg: Term
 };
 
 pub const TermBinder = struct {
-    // TODO
+    binderName: Slice,
+    binderType: Term,
+    body: Term
 };
 
-pub const TermLevel = struct {
-    // TODO
-};
+/// We reuse the kernel code for universe levels for Level terms
+pub const TermLevel = Level;
 
 pub const Parser = struct {
     const Self = @This();
 
-    l: *Lexer,
-    terms: Buffer(TermNode)
+    allocator: std.mem.Allocator,
+    arena: std.heap.ArenaAllocator,
+    src: []const u8,
+    lx: *Lexer,
+    terms: Buffer(TermNode) = undefined,
+    lm: *LevelManager = undefined, // Parser's LevelManager is separate from kernel's LevelManager
+
+    pub fn create(allocator: std.mem.Allocator, src: []const u8) *Parser {
+        const self = allocator.create(Parser) catch oom();
+        self.* = .{ .allocator = allocator, 
+            .arena = .init(allocator), .src = src,
+            .lx = undefined };
+        self.lx = .init(self.arena, src);
+        self.terms = .init(self.arena);
+        self.lm = .create(self.arena);
+        return self;
+    }
+
+    pub fn destroy(self: *Self) void {
+        self.arena.deinit();
+        self.allocator.destroy(self);
+    }
 
     // fn level(self: *Self) Term {
-        
-    // }    
+    //     const t = self.lx.lookahead(0);
+
+    // } 
 
 };

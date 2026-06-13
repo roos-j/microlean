@@ -11,7 +11,7 @@ test "Lexer" {
         \\def one := succ zero
     ;
 
-    var l = Lexer.init(src);
+    var l = Lexer.init(std.testing.allocator, src);
     defer l.deinit();
 
     var t = l.next();
