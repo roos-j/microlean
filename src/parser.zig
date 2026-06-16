@@ -22,24 +22,19 @@ pub const ParserError = error {
 /// command -> declaration | cmd
 /// cmd -> "#check" term
 /// declaration -> "axiom" IDENT ':' term | "def" IDENT (":" term)? ":=" term | "universe" IDENT | "import" IDENT
-///
-/// term -> lambda | funType | sort
-/// 
-/// sort -> "Sort" level | "Prop"
-///
-/// lambda -> "fun" binder "=>" term
-/// binder -> parenBinder+ | noParenBinder
-/// parenBinder -> "(" IDENT+ (":" term)? ")"
-/// noParenBinder -> IDENT+ (":" term)?
 /// 
 /// funType -> indepFunType | depFunType
-/// indepFunType -> app "->" funType
+/// indepFunType -> app ("->" funType)
+/// depFunType -> parenBinder "->" funType
 /// 
 /// app -> atom+
-/// atom -> ident | "(" term ")"
+///
+/// fun x: fun y:B => 
+/// 
 /// 
 /// 
 pub const TermKind = enum(u3) {
+    app,
     lambda,
     pi,
     sort,
@@ -72,8 +67,7 @@ pub const TermContent = union(TermKind) {
     pi: TermBinder,
     app: TermApp,
     sort: TermLevel,
-    ident: Slice,
-    numlit: u64, // Actual Lean has no size restriction here
+    ident: Name
 };
 
 pub const TermNode = struct {
@@ -87,7 +81,7 @@ pub const TermApp = struct {
 };
 
 pub const TermBinder = struct {
-    binderName: Slice,
+    binderName: Name,
     binderType: Term,
     body: Term
 };
@@ -104,7 +98,7 @@ pub const Parser = struct {
     lx: *Lexer = undefined,
     terms: Buffer(TermNode) = undefined,
     lm: *LevelManager = undefined, // Parser's LevelManager is separate from kernel's LevelManager
-    level_idents: std.StringHashMap(Name) = undefined,
+    idents: std.StringHashMap(Name) = undefined,
 
     pub fn create(allocator: std.mem.Allocator, src: []const u8) *Parser {
         const self = allocator.create(Parser) catch oom();
@@ -113,7 +107,7 @@ pub const Parser = struct {
         self.lx = .init(self.arena, src);
         self.terms = .init(self.arena);
         self.lm = .create(self.arena);
-        self.level_idents = .init(self.arena); 
+        self.idents = .init(self.arena); 
         return self;
     }
 
@@ -142,7 +136,97 @@ pub const Parser = struct {
         return ParserError.SyntaxError;
     }
 
-    /// level -> levelAtom ("+" NUMLIT)
+    /// `term -> lambda | funType`
+    fn term(self: *Self) ParserError!Term {
+        const t = self.lx.lookahead(0);
+        switch (t.kind) {
+            .lambda => lambda(),
+            else => funType()
+        }
+    }
+
+    /// `lambda -> "fun" binder "=>" term`
+    /// 
+    /// `binder -> parenBinder+ | noParenBinder`
+    /// 
+    /// `parenBinder -> "(" IDENT+ (":" term)? ")"`
+    /// 
+    /// `noParenBinder -> IDENT+ (":" term)?`
+    fn lambda(self: *Self) ParserError!Term {
+        _ = try self.expect(.lambda);
+        // const t = self.lx.lookahead(0);
+
+        // if (t.kind == .lparen) { // parenBinder
+        //     _ = try self.expect(.lparen);
+            
+        //     _ = try self.expect(.rparen);
+        // }
+    }
+
+    fn varType(self: *Self) ParserError!Term {
+        _ = try self.expect(.colon);
+        return self.term();
+    }
+
+    fn funType(self: *Self) ParserError!Term {
+        _ = self;
+    }
+
+    /// `atom -> IDENT | sort | "(" term ")"`
+    /// 
+    /// sort -> `"Sort" level | "Prop"`
+    fn atom(self: *Self) ParserError!Term {
+        const t = try self.expect(.{.ident, .sort, .prop, .lparen});
+        switch (t.kind) {
+            .ident => return self.mkIdent(t),
+            .sort => {
+                const lvl = try self.level();
+                return self.mkSort(t, lvl);
+            },
+            .prop => return self.mkSort(t, self.lm.mkZero()),
+            .lparen => {
+                const tk = try self.term();
+                _ = try self.expect(.rparen);
+                return tk;
+            },
+            else => unreachable
+        }
+    }
+
+    inline fn addTerm(self: *Self, t: Token, content: TermContent) Term {
+        const node: TermNode = .{ .content = content, .slice = .fromToken(t) };
+        const rv: Term = .{ .id = self.terms.len(), .kind = std.meta.activeTag(node.content) };
+        self.terms.append(node);
+        return rv;
+    }
+
+    fn mkIdent(self: *Self, t: Token) Term {
+        const n = self.identToName(t.token(self.lx));
+        const content: TermContent = .{ .ident = n };
+        return self.addTerm(t, content);
+    }
+
+    fn mkSort(self: *Self, t: Token, lvl: Level) Term {
+        const content: TermContent = .{ .sort = lvl };
+        return self.addTerm(t, content);
+    }
+
+    fn mkLambda(self: *Self, t: Token, binderName: Name, bType: Term, body: Term) Term {
+        const content: TermContent = .{ .lambda = .{ .binderName = binderName, .binderType = bType, .body = body } };
+        return self.addTerm(t, content);
+    }
+
+    fn mkPi(self: *Self, t: Token, binderName: Name, bType: Term, body: Term) Term {
+        const content: TermContent = .{ .pi = .{ .binderName = binderName, .binderType = bType, .body = body } };
+        return self.addTerm(t, content);
+    }
+
+    fn mkApp(self: *Self, t: Token, fun: Term, arg: Term) Term {
+        const content: TermContent = .{ .app = .{ .fun = fun, .arg = arg } };
+        return self.addTerm(t, content);
+    }
+
+    /// `level -> levelAtom ("+" NUMLIT)`
     fn level(self: *Self) ParserError!Level {
         const lvl = try self.levelAtom();
         if (self.lx.lookahead(0).kind == .plus) {
@@ -153,11 +237,12 @@ pub const Parser = struct {
         } else return lvl;
     }
 
-    fn identToLevelName(self: *Self, ident: []const u8) Name {
-        const res = self.level_idents.getOrPut(ident) catch oom();
+    /// Return Name id of an identifier.
+    fn identToName(self: *Self, ident: []const u8) Name {
+        const res = self.idents.getOrPut(ident) catch oom();
         if (res.found_existing) return res.value_ptr.*
         else {
-            const new_name: Name = self.level_idents.count(); // both u32
+            const new_name: Name = self.idents.count(); // both u32
             res.value_ptr.* = new_name;
             return new_name;
         }
@@ -175,8 +260,20 @@ pub const Parser = struct {
                 const res = try self.level();
                 _ = try self.expect(.rparen);
                 return res;
-            }
+            },
+            else => unreachable
         }
+    }
+
+    test "level" {
+        const src = "max (u + 1) imax v (w + 5) + 7";
+        const p = Parser.create(std.testing.allocator, src);
+        defer p.destroy();
+        const lvl = p.level();
+        const lvl_node = p.lm.getNode(lvl);
+        try std.testing.expect(lvl_node.content.kind() == .max);
+        try std.testing.expect(lvl_node.offset == 7);
+        try std.testing.expect(p.lm.getNode(lvl_node.content.max.lhs).offset == 1);
     }
 
 };

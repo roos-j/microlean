@@ -17,7 +17,7 @@ pub const ExprImmData = packed union {
 };
 
 pub const Expr = packed struct {
-    data: ExprImmData, // 32 bit. Index to the store's ExprNode array
+    data: ExprImmData, // Expr data
     
     _kind: ExprKind, // 4 bit
     _has_level_param: bool,
