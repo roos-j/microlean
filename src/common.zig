@@ -8,6 +8,16 @@ pub fn oom() noreturn {
 
 pub const Name = u32;
 
+pub fn Pair(comptime T1: type, comptime T2: type) type {
+    return struct {
+        fst: T1,
+        snd: T2,
+        pub fn mk(fst: T1, snd: T2) Pair(T1, T2) {
+            return .{ .fst = fst, .snd = snd };
+        }
+    };
+}
+
 /// Wrapper for an array list with an allocator and panic on out of memory.
 pub fn Buffer(comptime T: type) type {
     return struct {
