@@ -69,7 +69,7 @@ fn isNumLit(c: u8) bool {
 }
 
 fn isIdentCont(c: u8) bool {
-    return isIdentAscii(c) or isNumLit(c) or c == '\'' or c >= 0x80;
+    return isIdentAscii(c) or isNumLit(c) or c == '\'' or (c >= 0x80 and c != 0xFF);
 }
 
 fn isWhitespace(c: u8) bool {
@@ -435,7 +435,7 @@ pub const Lexer = struct {
 
 };
 
-test "advanceFull" {
+test "Lexer.advanceFull" {
     const src = "→∀=";
     var l = Lexer.init(std.testing.allocator, src);
     l.initToken();
@@ -444,7 +444,7 @@ test "advanceFull" {
     try std.testing.expect(std.mem.eql(u8, l.advanceFull(), "="));
 }
 
-test "lineNumber" {
+test "Lexer.lineNumber" {
     const src = 
         \\0123456
         \\8 --

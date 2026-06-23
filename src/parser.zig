@@ -27,8 +27,8 @@ pub const TermKind = enum(u3) {
     lambda,
     pi,
     sort,
-    ident,
-    numlit,
+    ident
+//    numlit,
 };
 
 pub const Term = packed struct {
@@ -48,6 +48,7 @@ pub const Command = union(CommandKind) {
     axiom: DeclInfo,
     def: DeclInfo,
     universe: Name,
+    import: void, // to do
     check: Term,
 
     pub fn kind(self: Command) CommandKind {
@@ -77,9 +78,9 @@ pub const DeclInfo = struct {
 };
 
 pub const TermContent = union(TermKind) {
+    app: TermApp,
     lambda: TermBinder,
     pi: TermBinder,
-    app: TermApp,
     sort: TermLevel,
     ident: Name
 };
@@ -135,10 +136,10 @@ pub const Parser = struct {
     /// Consume and return next token, checking if it is of prescribed kind.
     fn expect(self: *Self, comptime expected: anytype) ParserError!Token {
         const t = self.lx.next();
-        if (@TypeOf(expected) == TokenKind) {
+        if (@TypeOf(expected) == @EnumLiteral()) {
             if (t.kind == expected) return t;
             const line = self.lx.lineNumber(t.source_offset);
-            std.debug.print("l. {d}: expected {s}, found {s}\n", .{line, @tagName(expected), @tagName(t.kind)});
+            std.debug.print("l. {d}: expected `{s}`, found `{s}`\n", .{line, @tagName(expected), @tagName(t.kind)});
             return ParserError.SyntaxError;
         }
         // Assume expected is an iterable over TokenKind
@@ -147,8 +148,8 @@ pub const Parser = struct {
         const line = self.lx.lineNumber(t.source_offset);
         std.debug.print("l. {d}: expected one of {{", .{line});
         inline for (expected) |kind|
-            std.debug.print("{s} ", .{@tagName(kind)});
-        std.debug.print("}}, found {s}\n", .{@tagName(t.kind)});
+            std.debug.print("`{s}` ", .{@tagName(kind)});
+        std.debug.print("}}, found `{s}`\n", .{@tagName(t.kind)});
         return ParserError.SyntaxError;
     }
 
@@ -169,7 +170,7 @@ pub const Parser = struct {
             },
             .def => {
                 const id_n = try self.ident();
-                const typ: ?Term = undefined;
+                var typ: ?Term = undefined;
                 var tk = try self.expect(.{.colon, .coloneq});
                 if (tk.kind == .colon) {
                     typ = try self.term();
@@ -211,9 +212,9 @@ pub const Parser = struct {
         _ = try self.expect(.lambda);
         var t = self.lx.lookahead(0);
 
-        const idents: Buffer(Token) = .init(self.arena.allocator());
+        var idents: Buffer(Token) = .init(self.arena.allocator());
         defer idents.deinit();
-        const types: Buffer(Pair(?Term, usize)) = .init(self.arena.allocator());
+        var types: Buffer(Pair(?Term, usize)) = .init(self.arena.allocator());
         defer types.deinit();
  
         if (t.kind != .lparen) { // noParenBinder
@@ -252,7 +253,7 @@ pub const Parser = struct {
             cnt += 1;
             tk = self.lx.lookahead(0);
             if (tk.kind != .ident) break
-            else tk = try self.lx.next();
+            else tk = self.lx.next();
         }
         if (tk.kind == .colon) {
             _ = try self.expect(.colon);
@@ -274,9 +275,9 @@ pub const Parser = struct {
             while (self.lx.lookahead(i).kind == .ident) i += 1;
             if (self.lx.lookahead(i).kind == .colon) { // depFunType
                 _ = try self.expect(.lparen);
-                const idents: Buffer(Token) = .init(self.arena.allocator());
+                var idents: Buffer(Token) = .init(self.arena.allocator());
                 defer idents.deinit();
-                const types: Buffer(Pair(?Term, usize)) = .init(self.arena.allocator());
+                var types: Buffer(Pair(?Term, usize)) = .init(self.arena.allocator());
                 defer types.deinit();
                 try self.binderDesc(&idents, &types);
                 _ = try self.expect(.rparen);
@@ -295,8 +296,9 @@ pub const Parser = struct {
         }
         // indepFunType
         const head = try self.app();
-        tk = try self.lx.lookahead(0);
+        tk = self.lx.lookahead(0);
         if (tk.kind == .to) {
+            _ = self.lx.next();
             const body = try self.funType();
             return self.mkPi(tk, anonymous, head, body);
         } else {
@@ -341,7 +343,7 @@ pub const Parser = struct {
 
     inline fn addTerm(self: *Self, t: Token, content: TermContent) Term {
         const node: TermNode = .{ .content = content, .slice = .fromToken(t) };
-        const rv: Term = .{ .id = self.terms.len(), .kind = std.meta.activeTag(node.content) };
+        const rv: Term = .{ .id = @intCast(self.terms.len()), .kind = std.meta.activeTag(node.content) };
         self.terms.append(node);
         return rv;
     }
@@ -423,9 +425,11 @@ test "level" {
     defer p.destroy();
     const lvl = try p.level();
     const lvl_node = p.lm.getNode(lvl);
-    try std.testing.expect(lvl_node.content.kind() == .max);
+    try std.testing.expect(lvl_node.content.kind() == .succ);
     try std.testing.expect(lvl_node.offset == 7);
-    try std.testing.expect(p.lm.getNode(lvl_node.content.max.lhs).offset == 1);
+    const max_node = p.lm.getNode(lvl_node.offset_base);
+    try std.testing.expect(max_node.content.kind() == .max);
+    try std.testing.expect(p.lm.getNode(max_node.content.max.lhs).offset == 1);
 }
 
 test "command_def" {
@@ -433,9 +437,9 @@ test "command_def" {
     const p = Parser.create(std.testing.allocator, src);
     defer p.destroy();
     const cmd = try p.command();
-    std.testing.expect(cmd.kind() == .def);
-    std.testing.expect(cmd.def.typ == null);
-    std.testing.expect(cmd.def.val.?.kind == .sort);
+    try std.testing.expect(cmd.kind() == .def);
+    try std.testing.expect(cmd.def.typ == null);
+    try std.testing.expect(cmd.def.val.?.kind == .sort);
 }
 
 test "command_axiom" {
@@ -443,8 +447,8 @@ test "command_axiom" {
     const p = Parser.create(std.testing.allocator, src);
     defer p.destroy();
     const cmd = try p.command();
-    std.testing.expect(cmd.kind() == .axiom);
-    std.testing.expect(cmd.def.typ.?.kind == .ident);
+    try std.testing.expect(cmd.kind() == .axiom);
+    try std.testing.expect(cmd.axiom.typ.?.kind == .ident);
 }
 
 test "command_def_id" {
@@ -452,16 +456,16 @@ test "command_def_id" {
     const p = Parser.create(std.testing.allocator, src);
     defer p.destroy();
     const cmd = try p.command();
-    std.testing.expect(cmd.kind() == .def);
-    std.testing.expect(cmd.def.typ.?.kind == .pi);
-    std.testing.expect(cmd.def.val.?.kind != .lambda);
+    try std.testing.expect(cmd.kind() == .def);
+    try std.testing.expect(cmd.def.typ.?.kind == .pi);
+    try std.testing.expect(cmd.def.val.?.kind == .lambda);
 }
 
 test "command_def_err" {
     const src = "def bad : X => X := Nat";
     const p = Parser.create(std.testing.allocator, src);
     defer p.destroy();
-    std.testing.expect(false);
-    //const cmd = p.command();
-    //std.testing.expect(cmd != ParserError.SyntaxError);
+    // std.testing.expect(false);
+    const cmd = p.command();
+    try std.testing.expect(cmd == ParserError.SyntaxError);
 }
