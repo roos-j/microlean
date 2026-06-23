@@ -3,6 +3,7 @@ const oom = @import("common.zig").oom;
 const Buffer = @import("common.zig").Buffer;
 const Pair = @import("common.zig").Pair;
 const Name = @import("common.zig").Name;
+const anonymous = @import("common.zig").anonymous;
 
 const Lexer = @import("lexer.zig").Lexer;
 const Token = @import("lexer.zig").Token;
@@ -19,16 +20,7 @@ pub const ParserError = error {
 /// We implement a simple recursive descent parser.
 /// Almost LL(1) grammar (except for arbitrary identifier look ahead):
 ///
-/// file -> command*
-/// command -> declaration | cmd
-/// cmd -> "#check" term
-/// declaration -> "axiom" IDENT ':' term | "def" IDENT (":" term)? ":=" term | "universe" IDENT | "import" IDENT
-/// 
-/// 
-///
-/// fun x: fun y:B => 
-/// 
-/// 
+/// file -> command* -- require new line after command
 /// 
 pub const TermKind = enum(u3) {
     app,
@@ -44,6 +36,25 @@ pub const Term = packed struct {
     id: u32
 };
 
+pub const CommandKind = enum {
+    axiom,
+    def,
+    universe,
+    import,
+    check,
+};
+
+pub const Command = union(CommandKind) {
+    axiom: DeclInfo,
+    def: DeclInfo,
+    universe: Name,
+    check: Term,
+
+    pub fn kind(self: Command) CommandKind {
+        return std.meta.activeTag(self);
+    }
+};
+
 /// A slice of the original source code
 pub const Slice = packed struct {
     start: usize, // Start index
@@ -57,6 +68,12 @@ pub const Slice = packed struct {
     pub fn fromToken(t: Token) Slice {
         return .{ .start = t.source_offset+t.offset, .len = t.len-t.offset };
     }
+};
+
+pub const DeclInfo = struct {
+    ident: Name,
+    typ: ?Term = null,
+    val: ?Term = null    
 };
 
 pub const TermContent = union(TermKind) {
@@ -106,7 +123,7 @@ pub const Parser = struct {
         self.terms = .init(self.arena.allocator());
         self.lm = .create(self.arena.allocator());
         self.idents = .init(self.arena.allocator()); 
-        self.idents.put("_", 0) catch oom(); // hard-code anonymous identifier
+        self.idents.put("_", anonymous) catch oom(); // hard-code anonymous identifier
         return self;
     }
 
@@ -133,6 +150,45 @@ pub const Parser = struct {
             std.debug.print("{s} ", .{@tagName(kind)});
         std.debug.print("}}, found {s}\n", .{@tagName(t.kind)});
         return ParserError.SyntaxError;
+    }
+
+    /// `command -> declaration | cmd`
+    /// 
+    /// `cmd -> "#check" term`
+    /// 
+    /// `declaration -> "axiom" IDENT ':' term | "def" IDENT (":" term)? ":=" term | "universe" IDENT | "import" IDENT`
+    fn command(self: *Self) ParserError!Command {
+        const t = try self.expect(.{.check, .axiom, .def, .universe, .import});
+        switch (t.kind) {
+            .check => return .{ .check = try self.term() },
+            .axiom => {
+                const id_n = try self.ident();
+                _ = try self.expect(.colon);
+                const typ = try self.term();
+                return .{ .axiom = .{ .ident = id_n, .typ = typ } };
+            },
+            .def => {
+                const id_n = try self.ident();
+                const typ: ?Term = undefined;
+                var tk = try self.expect(.{.colon, .coloneq});
+                if (tk.kind == .colon) {
+                    typ = try self.term();
+                    tk = try self.expect(.coloneq);
+                } else typ = null;
+                std.debug.assert(tk.kind == .coloneq);
+                const val = try self.term();
+                return .{ .def = .{ .ident = id_n, .typ = typ, .val = val } };
+            },
+            .universe => return .{ .universe = try self.ident() },
+            .import => @panic("'import' not yet implemented"),
+            else => unreachable
+        }
+    }
+
+    /// Consume an `IDENT` token, register identifier and return name id.
+    fn ident(self: *Self) ParserError!Name {
+        const id_tk = try self.expect(.ident);
+        return self.identToName(id_tk.token(self.lx));
     }
 
     /// `term -> lambda | funType`
@@ -179,9 +235,9 @@ pub const Parser = struct {
             const cur_type_p = types.pop() orelse unreachable;
             std.debug.assert(cur_type_p.snd > 0);
             for (0..cur_type_p.snd) |_| {
-                const ident = idents.pop() orelse unreachable;
-                std.debug.assert(ident.kind == .ident);
-                body = self.mkLambda(ident, cur_type_p.fst, body);
+                const id = idents.pop() orelse unreachable;
+                std.debug.assert(id.kind == .ident);
+                body = self.mkLambda(id, cur_type_p.fst, body);
             }
         }
         return body;
@@ -198,14 +254,10 @@ pub const Parser = struct {
             if (tk.kind != .ident) break
             else tk = try self.lx.next();
         }
-        if (tk.kind == .colon) types.append(.mk(try self.varType(), cnt))
-        else types.append(.mk(null, cnt));
-    }
-
-    /// `":" term`
-    fn varType(self: *Self) ParserError!Term {
-        _ = try self.expect(.colon);
-        return try self.term();
+        if (tk.kind == .colon) {
+            _ = try self.expect(.colon);
+            types.append(.mk(try self.term(), cnt));
+        } else types.append(.mk(null, cnt));
     }
 
     /// `funType -> indepFunType | depFunType`
@@ -246,7 +298,7 @@ pub const Parser = struct {
         tk = try self.lx.lookahead(0);
         if (tk.kind == .to) {
             const body = try self.funType();
-            return self.mkPi(tk, 0, head, body);
+            return self.mkPi(tk, anonymous, head, body);
         } else {
             return head;
         }
@@ -335,8 +387,8 @@ pub const Parser = struct {
     }
 
     /// Return Name id of an identifier.
-    fn identToName(self: *Self, ident: []const u8) Name {
-        const res = self.idents.getOrPut(ident) catch oom();
+    fn identToName(self: *Self, id: []const u8) Name {
+        const res = self.idents.getOrPut(id) catch oom();
         if (res.found_existing) return res.value_ptr.*
         else {
             const new_name: Name = self.idents.count()-1; // both u32
@@ -362,15 +414,54 @@ pub const Parser = struct {
         }
     }
 
-    test "level" {
-        const src = "max (u + 1) imax v (w + 5) + 7";
-        const p = Parser.create(std.testing.allocator, src);
-        defer p.destroy();
-        const lvl = try p.level();
-        const lvl_node = p.lm.getNode(lvl);
-        try std.testing.expect(lvl_node.content.kind() == .max);
-        try std.testing.expect(lvl_node.offset == 7);
-        try std.testing.expect(p.lm.getNode(lvl_node.content.max.lhs).offset == 1);
-    }
 
 };
+
+test "level" {
+    const src = "max (u + 1) imax v (w + 5) + 7";
+    const p = Parser.create(std.testing.allocator, src);
+    defer p.destroy();
+    const lvl = try p.level();
+    const lvl_node = p.lm.getNode(lvl);
+    try std.testing.expect(lvl_node.content.kind() == .max);
+    try std.testing.expect(lvl_node.offset == 7);
+    try std.testing.expect(p.lm.getNode(lvl_node.content.max.lhs).offset == 1);
+}
+
+test "command_def" {
+    const src = "def Type := Sort 1";
+    const p = Parser.create(std.testing.allocator, src);
+    defer p.destroy();
+    const cmd = try p.command();
+    std.testing.expect(cmd.kind() == .def);
+    std.testing.expect(cmd.def.typ == null);
+    std.testing.expect(cmd.def.val.?.kind == .sort);
+}
+
+test "command_axiom" {
+    const src = "axiom Nat : Type";
+    const p = Parser.create(std.testing.allocator, src);
+    defer p.destroy();
+    const cmd = try p.command();
+    std.testing.expect(cmd.kind() == .axiom);
+    std.testing.expect(cmd.def.typ.?.kind == .ident);
+}
+
+test "command_def_id" {
+    const src = "def id : X -> X := fun x => x";
+    const p = Parser.create(std.testing.allocator, src);
+    defer p.destroy();
+    const cmd = try p.command();
+    std.testing.expect(cmd.kind() == .def);
+    std.testing.expect(cmd.def.typ.?.kind == .pi);
+    std.testing.expect(cmd.def.val.?.kind != .lambda);
+}
+
+test "command_def_err" {
+    const src = "def bad : X => X := Nat";
+    const p = Parser.create(std.testing.allocator, src);
+    defer p.destroy();
+    std.testing.expect(false);
+    //const cmd = p.command();
+    //std.testing.expect(cmd != ParserError.SyntaxError);
+}

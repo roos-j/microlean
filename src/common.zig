@@ -7,6 +7,7 @@ pub fn oom() noreturn {
 // pub const Name = []const u8;
 
 pub const Name = u32;
+pub const anonymous: Name = 0;
 
 pub fn Pair(comptime T1: type, comptime T2: type) type {
     return struct {
