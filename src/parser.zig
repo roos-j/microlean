@@ -133,6 +133,12 @@ pub const Parser = struct {
         self.allocator.destroy(self);
     }
 
+    /// Retrieve term node for given term.
+    pub fn getNode(self: *Self, t: Term) TermNode {
+        std.debug.assert(t.id < self.terms.len());
+        return self.terms.get(t.id);
+    }
+
     /// Consume and return next token, checking if it is of prescribed kind.
     fn expect(self: *Self, comptime expected: anytype) ParserError!Token {
         const t = self.lx.next();
