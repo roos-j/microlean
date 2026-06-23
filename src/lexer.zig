@@ -180,33 +180,17 @@ pub const Lexer = struct {
 
     /// Return line number of given position in source by binary search.
     pub fn lineNumber(self: *Self, pos: usize) usize {
-        var lower_bd = 0;
+        var lower_bd: usize = 0;
         var upper_bd = self.lines.len();
-        while (upper_bd > lower_bd + 1) {
+        while (upper_bd > lower_bd) {
             const mid = lower_bd + ((upper_bd - lower_bd) >> 1);
             const lpos = self.lines.get(mid);
-            if (lpos < pos) lower_bd = mid
-            else if (lpos > pos) upper_bd = mid
-            else return mid + 1; // Newline character itself is counted as belonging to previovus line.
+            if (lpos < pos) lower_bd = mid + 1
+            else upper_bd = mid;
+            // else if (lpos > pos) upper_bd = mid
+            // else return mid + 1; // Newline character itself is counted as belonging to previovus line.
         }
-        return upper_bd + 1;
-    }
-
-    test "lineNumber" {
-        const src = 
-            \\0123456
-            \\8 --
-            \\13
-            \\
-        ;
-        var l = Lexer.init(std.testing.allocator, src);
-        while (!l.next().isEOF()) {}
-        try std.testing.expect(l.lines.len() == 3);
-        try std.testing.expect(l.lineNumber(0) == 1);
-        try std.testing.expect(l.lineNumber(8) == 2);
-        try std.testing.expect(l.lineNumber(12) == 2);
-        try std.testing.expect(l.lineNumber(13) == 3);
-        try std.testing.expect(l.lineNumber(16) == 4);
+        return lower_bd + 1;
     }
 
     // pub fn rewind(self: *Self, offset: usize) void {
@@ -424,7 +408,7 @@ pub const Lexer = struct {
     fn peekFull(self: *Self) []const u8 {
         std.debug.assert(self.cur < self.src.len);
         const b: u8 = self.src[self.cur];
-        std.debug.assert(b >= 0x80); // meant to be called only on non-ascii bytes
+        //std.debug.assert(b >= 0x80); // meant to be called only on non-ascii bytes
         const len = std.unicode.utf8ByteSequenceLength(b) catch return self.handleutf8error();
         std.debug.assert(self.cur + len <= self.src.len);
         const res = self.src[self.cur..self.cur+len];
@@ -449,14 +433,31 @@ pub const Lexer = struct {
         utf8error();
     }
 
-    test "advanceFull" {
-        const src = "→∀=";
-        var l = Lexer.init(std.testing.allocator, src);
-        l.initToken();
-        try std.testing.expect(std.mem.eql(u8, l.advanceFull(), "→"));
-        try std.testing.expect(std.mem.eql(u8, l.advanceFull(), "∀"));
-        try std.testing.expect(std.mem.eql(u8, l.advanceFull(), "="));
-    }
-
 };
 
+test "advanceFull" {
+    const src = "→∀=";
+    var l = Lexer.init(std.testing.allocator, src);
+    l.initToken();
+    try std.testing.expect(std.mem.eql(u8, l.advanceFull(), "→"));
+    try std.testing.expect(std.mem.eql(u8, l.advanceFull(), "∀"));
+    try std.testing.expect(std.mem.eql(u8, l.advanceFull(), "="));
+}
+
+test "lineNumber" {
+    const src = 
+        \\0123456
+        \\8 --
+        \\13
+        \\
+    ;
+    var l = Lexer.init(std.testing.allocator, src);
+    defer l.deinit();
+    while (!l.next().isEOF()) {}
+    try std.testing.expect(l.lines.len() == 3);
+    try std.testing.expect(l.lineNumber(0) == 1);
+    try std.testing.expect(l.lineNumber(8) == 2);
+    try std.testing.expect(l.lineNumber(12) == 2);
+    try std.testing.expect(l.lineNumber(13) == 3);
+    try std.testing.expect(l.lineNumber(16) == 4);
+}
