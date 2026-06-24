@@ -14,6 +14,7 @@ const Level = @import("level.zig").Level;
 
 pub const ParserError = error {
     SyntaxError,
+    UnknownIdentifier
 };
 
 /// Parser for MicroLean
@@ -112,7 +113,7 @@ pub const Parser = struct {
     src: []const u8,
     lx: *Lexer = undefined,
     terms: Buffer(TermNode) = undefined,
-    lm: *LevelManager = undefined, // Parser's LevelManager is separate from kernel's LevelManager
+    lm: *LevelManager = undefined, // Parser's LevelManager currently has to be the same as kernel's LevelManager; but this can be changed
     idents: std.StringHashMap(Name) = undefined,
 
     pub fn create(allocator: std.mem.Allocator, src: []const u8) *Parser {
@@ -139,6 +140,8 @@ pub const Parser = struct {
         return self.terms.get(t.id);
     }
 
+    // ToDo: move error reporting into separate file 'diagnostic'/'trace'
+
     /// Consume and return next token, checking if it is of prescribed kind.
     fn expect(self: *Self, comptime expected: anytype) ParserError!Token {
         const t = self.lx.next();
@@ -158,6 +161,16 @@ pub const Parser = struct {
         std.debug.print("}}, found `{s}`\n", .{@tagName(t.kind)});
         return ParserError.SyntaxError;
     }
+
+    /// Generate error message for unknown identifier. Called by `Elab`.
+    pub fn unknownIdentifier(self: *Self, t: Term) ParserError {
+        const node = self.getNode(t);
+        const line = self.lx.lineNumber(node.slice.start);
+        const tk = node.slice.get(self.lx);
+        std.debug.print("l. {d}: unknown identifier: '{s}'\n", .{line, tk});
+        return ParserError.UnknownIdentifier;
+    }
+
 
     /// `command -> declaration | cmd`
     /// 
