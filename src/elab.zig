@@ -28,7 +28,6 @@ pub const Elab = struct {
     const Self = @This();
 
     // allocator: std.mem.Allocator,
-    arena: std.heap.ArenaAllocator,
     p: *const Parser,
     // em: *const ExprManager,
     es: *ExprStore,
@@ -37,18 +36,17 @@ pub const Elab = struct {
     local_ctx: Buffer(Name), // Stack of currently open bvars. A given identifier can appear multiple times
     
     pub fn init(allocator: std.mem.Allocator, parser: *const Parser, es: *ExprStore, env: *const Environment) Self {
-        const arena: std.heap.ArenaAllocator = .init(allocator);
-        return .{ .arena = arena, .p = parser, .es = es, .env = env,
-                .local_ctx = .init(arena.allocator()) };
+        return .{ .p = parser, .es = es, .env = env,
+                .local_ctx = .init(allocator) };
     }
 
     pub fn deinit(self: *Self) void {
-        self.arena.deinit();
+        self.local_ctx.deinit();
     }
 
     /// Elaborate a given term. No type checking.
-    pub fn elabTerm(self: *Self, t: Term) Expr {
-        return self.elabTermCore(t);
+    pub fn elabTerm(self: *Self, t: Term) ParserError!Expr {
+        return try self.elabTermCore(t);
     }
 
     /// Push a bound variable to local context.
@@ -66,7 +64,7 @@ pub const Elab = struct {
     /// in the local context. In that case, the most recent occurrence is returned.
     fn resolveBvar(self: *Self, n: Name) ?Expr {
         for (0..self.local_ctx.len()) |i| {
-            if (self.local_ctx.get(self.local_ctx.len()-i-1) == n) return self.es.mkBvar(i);
+            if (self.local_ctx.get(self.local_ctx.len()-i-1) == n) return self.es.mkBvar(@intCast(i));
         }
         return null;
     }
@@ -79,7 +77,7 @@ pub const Elab = struct {
         if (self.env.find(n)) |info| {
             // ToDo: Support level parameters. Here we should make fresh universe level mvars
             // and substitute them into type and body, then later fill them
-            std.debug.assert(!info.getNumLevelParams() == 0);
+            std.debug.assert(info.getNumLevelParams() == 0);
             // const levels = info.getLevelParams();
             const e = self.es.mkFreeConst(n);
             return e;
@@ -124,7 +122,7 @@ pub const Elab = struct {
             },
             .sort => {
                 // For now we just copy the level from the term.
-                // Later maybe separate term-level from expr-level?
+                // Later separate term-level from expr-level
                 const lvl = node.content.sort;
                 return self.es.mkSort(lvl);
             }

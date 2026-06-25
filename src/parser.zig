@@ -116,17 +116,23 @@ pub const Parser = struct {
     lm: *LevelManager = undefined, // Parser's LevelManager currently has to be the same as kernel's LevelManager; but this can be changed
     idents: std.StringHashMap(Name) = undefined,
 
-    pub fn create(allocator: std.mem.Allocator, src: []const u8) *Parser {
+    pub fn _create(allocator: std.mem.Allocator, lm: *LevelManager, src: []const u8) *Parser {
         const self = allocator.create(Parser) catch oom();
         self.* = .{ .allocator = allocator, 
             .arena = .init(allocator), .src = src };
         self.lx = self.arena.allocator().create(Lexer) catch oom();
         self.lx.* = .init(self.arena.allocator(), src);
         self.terms = .init(self.arena.allocator());
-        self.lm = .create(self.arena.allocator());
+        self.lm = lm;
         self.idents = .init(self.arena.allocator()); 
         self.idents.put("_", anonymous) catch oom(); // hard-code anonymous identifier
         return self;
+    }
+
+    pub fn create(allocator: std.mem.Allocator, src: []const u8) *Parser {
+        const rv = Parser._create(allocator, undefined, src);
+        rv.lm = .create(rv.arena);
+        return rv;
     }
 
     pub fn destroy(self: *Self) void {
@@ -135,7 +141,7 @@ pub const Parser = struct {
     }
 
     /// Retrieve term node for given term.
-    pub fn getNode(self: *Self, t: Term) TermNode {
+    pub fn getNode(self: *const Self, t: Term) TermNode {
         std.debug.assert(t.id < self.terms.len());
         return self.terms.get(t.id);
     }
@@ -163,11 +169,12 @@ pub const Parser = struct {
     }
 
     /// Generate error message for unknown identifier. Called by `Elab`.
-    pub fn unknownIdentifier(self: *Self, t: Term) ParserError {
+    pub fn unknownIdentifier(self: *const Self, t: Term) ParserError {
         const node = self.getNode(t);
         const line = self.lx.lineNumber(node.slice.start);
         const tk = node.slice.get(self.lx);
-        std.debug.print("l. {d}: unknown identifier: '{s}'\n", .{line, tk});
+        const n =node.content.ident;
+        std.debug.print("l. {d}: unknown identifier: '{s}' (id={d})\n", .{line, tk, n});
         return ParserError.UnknownIdentifier;
     }
 
@@ -212,7 +219,7 @@ pub const Parser = struct {
     }
 
     /// `term -> lambda | funType`
-    fn term(self: *Self) ParserError!Term {
+    pub fn term(self: *Self) ParserError!Term {
         const t = self.lx.lookahead(0);
         switch (t.kind) {
             .lambda => return try self.lambda(),
@@ -413,6 +420,7 @@ pub const Parser = struct {
         if (res.found_existing) return res.value_ptr.*
         else {
             const new_name: Name = self.idents.count()-1; // both u32
+            std.debug.print("identToName added: {s} = {d}\n", .{id, new_name});
             res.value_ptr.* = new_name;
             return new_name;
         }

@@ -8,35 +8,7 @@ const ExprStore = @import("src/expr.zig").ExprStore;
 const TypeChecker = @import("src/type_checker.zig").TypeChecker;
 const Environment = @import("src/environment.zig").Environment;
 
-const TestCtx = struct {
-    const Self = @This();
-
-    allocator: std.mem.Allocator,
-    lm: *LevelManager,
-    em: *ExprManager,
-    gs: *ExprStore,
-    env: *Environment,
-
-    pub fn init() Self {
-        const allocator = std.testing.allocator;
-        const lm = LevelManager.create(allocator);
-        const em = ExprManager.create(allocator, lm);
-        const env = Environment.create(allocator, em);
-        return .{
-            .allocator = allocator,
-            .lm = lm,
-            .em = em,
-            .gs = em.getGlobalStore(),
-            .env = env
-        };
-    }
-
-    pub fn deinit(self: *Self) void {
-        self.em.destroy();
-        self.lm.destroy();
-        self.env.destroy();
-    }
-};
+const TestCtx = @import("test.zig").TestCtx;
 
 test "Level" {
     var ctx = TestCtx.init();
