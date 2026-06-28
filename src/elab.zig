@@ -9,12 +9,14 @@ const ParserError = @import("parser.zig").ParserError;
 const Term = @import("parser.zig").Term;
 const TermNode = @import("parser.zig").TermNode;
 const TermBinder = @import("parser.zig").TermBinder;
+const Command = @import("parser.zig").Command;
 
 const Expr = @import("expr.zig").Expr;
 const ExprManager = @import("expr.zig").ExprManager;
 const ExprStore = @import("expr.zig").ExprStore;
 
 const Environment = @import("environment.zig").Environment;
+const ConstantInfo = @import("environment.zig").ConstantInfo;
 
 /// Elaborate `Term` into `Expr`.
 /// 
@@ -42,6 +44,29 @@ pub const Elab = struct {
 
     pub fn deinit(self: *Self) void {
         self.local_ctx.deinit();
+    }
+
+    /// Elaborate a declaration (no type checking).
+    pub fn elabDecl(self: *Self, c: Command) ParserError!ConstantInfo {
+        switch (c.kind()) {
+            .axiom => {
+                const n = c.axiom.ident;
+                std.debug.assert(c.axiom.val == null);
+                std.debug.assert(c.axiom.typ != null);
+                const typ = try self.elabTerm(c.axiom.typ.?);
+                // TODO: implement levelParams
+                return .{ .axiomInfo = .{ .name = n, .levelParams = &.{}, .type = typ } }; 
+            },
+            .defn => {
+                const n = c.def.ident;
+                std.debug.assert(c.def.val != null);
+                const typ = if (c.def.typ) |t| try self.elabTerm(t) else null;
+                const val = try self.elabTerm(c.def.val.?);
+                // TODO: implement levelParams
+                return .{ .defnInfo = .{ .name = n, .levelParams = &.{}, .type = typ, .value = val }  };
+            },
+            else => unreachable
+        }
     }
 
     /// Elaborate a given term. No type checking.

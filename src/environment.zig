@@ -155,6 +155,14 @@ pub const Environment = struct {
         self.constants.put(name, info) catch oom();
     }
 
+    /// Unpack a `ConstantInfo` and call `add` or `addAxiom`
+    pub fn addConstant(self: *Self, info: ConstantInfo) KernelError!void {
+        switch (info) {
+            .axiomInfo => try self.addAxiom(info.axiomInfo.name, info.axiomInfo.levelParams, info.axiomInfo.type),
+            .defnInfo => try self.add(info.defnInfo.name, info.defnInfo.levelParams, info.defnInfo.type, info.defnInfo.value)
+        }
+    }    
+
     /// Type-check a proposed axiom.
     fn checkAxiom(self: *Self, typ: Expr) KernelError!void {
         const tc: *TypeChecker = .create(self.allocator, self.em, self.em.getGlobalStore(), self);
