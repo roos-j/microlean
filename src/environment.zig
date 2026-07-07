@@ -49,6 +49,14 @@ pub const ConstantInfo = union(ConstantInfoKind) {
     axiomInfo: AxiomVal,
     defnInfo: DefinitionVal,
 
+
+    pub inline fn getName(info: ConstantInfo) Name {
+        return switch (info) {
+            .axiomInfo => |val| val.name,
+            .defnInfo => |val| val.name
+        };
+    }
+
     pub inline fn hasValue(info: ConstantInfo) bool {
         return switch (info) {
             .axiomInfo => false,

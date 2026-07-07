@@ -30,7 +30,7 @@ test "Elab.elabTerm" {
     const p = Parser._create(std.testing.allocator, lm, src);
     defer p.destroy();
 
-    var el: Elab = .init(std.testing.allocator, p, es, env);
+    var el: Elab = .init(std.testing.allocator, p, em, es, env);
     defer el.deinit();
     
     const term = try p.term();
@@ -40,4 +40,28 @@ test "Elab.elabTerm" {
     try std.testing.expect(node.content.lambda.binderName == nx);
     try std.testing.expect(node.content.lambda.binderType.isConst());
     try std.testing.expect(node.content.lambda.body.isBvar());
+}
+
+test "Elab.elabDecl" {
+    var ctx: TestCtx = .init();
+    defer ctx.deinit();
+    const env = ctx.env;
+    const em = ctx.em;
+    const es = ctx.em.getGlobalStore();
+    const lm = ctx.lm;
+    
+    const src = "def id := fun x : Sort 1 => x";
+    const p = Parser._create(std.testing.allocator, lm, src);
+    defer p.destroy();
+
+    var el: Elab = .init(std.testing.allocator, p, em, es, env);
+    defer el.deinit();
+
+    const cmd = try p.command();
+    try std.testing.expect(cmd.kind() == .def);
+    const ci = try el.elabDecl(cmd, true);
+    try std.testing.expect(ci.getValue().isLambda());
+    try std.testing.expect(ci.getType().isPi());
+    try std.testing.expect(ci.getName() == p.getNameByIdent("id"));
+    // try std.testing.expect(ci.)
 }

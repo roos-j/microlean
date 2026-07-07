@@ -184,7 +184,7 @@ pub const Parser = struct {
     /// `cmd -> "#check" term`
     /// 
     /// `declaration -> "axiom" IDENT ':' term | "def" IDENT (":" term)? ":=" term | "universe" IDENT | "import" IDENT`
-    fn command(self: *Self) ParserError!Command {
+    pub fn command(self: *Self) ParserError!Command {
         const t = try self.expect(.{.check, .axiom, .def, .universe, .import});
         switch (t.kind) {
             .check => return .{ .check = try self.term() },
@@ -414,7 +414,7 @@ pub const Parser = struct {
         } else return lvl;
     }
 
-    /// Return Name id of an identifier.
+    /// Return Name id of an identifier. If it is not found, it is added under a new id.
     fn identToName(self: *Self, id: []const u8) Name {
         const res = self.idents.getOrPut(id) catch oom();
         if (res.found_existing) return res.value_ptr.*
@@ -424,6 +424,11 @@ pub const Parser = struct {
             res.value_ptr.* = new_name;
             return new_name;
         }
+    }
+
+    /// Find given identifier and return its internal `Name` id if found.
+    pub fn getNameByIdent(self: *Self, id: []const u8) ?Name {
+        return self.idents.get(id);
     }
 
     /// levelAtom -> ident | "max" levelAtom levelAtom | "imax" levelAtom levelAtom | NUMLIT | "(" level ")"

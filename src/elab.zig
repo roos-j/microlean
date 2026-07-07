@@ -15,6 +15,9 @@ const Expr = @import("expr.zig").Expr;
 const ExprManager = @import("expr.zig").ExprManager;
 const ExprStore = @import("expr.zig").ExprStore;
 
+const TypeChecker = @import("type_checker.zig").TypeChecker;
+const KernelError = @import("type_checker.zig").KernelError;
+
 const Environment = @import("environment.zig").Environment;
 const ConstantInfo = @import("environment.zig").ConstantInfo;
 
@@ -31,23 +34,27 @@ pub const Elab = struct {
 
     // allocator: std.mem.Allocator,
     p: *const Parser,
-    // em: *const ExprManager,
+    em: *ExprManager,
     es: *ExprStore,
-    env: *const Environment,
+    env: *Environment,
+    tc: *TypeChecker,
 
     local_ctx: Buffer(Name), // Stack of currently open bvars. A given identifier can appear multiple times
     
-    pub fn init(allocator: std.mem.Allocator, parser: *const Parser, es: *ExprStore, env: *const Environment) Self {
-        return .{ .p = parser, .es = es, .env = env,
+    pub fn init(allocator: std.mem.Allocator, parser: *const Parser, em: *ExprManager, es: *ExprStore, env: *Environment) Self {
+        return .{ .p = parser, .em = em, .es = es, .env = env,
+                .tc = .create(allocator, em, es, env),
                 .local_ctx = .init(allocator) };
     }
 
     pub fn deinit(self: *Self) void {
+        self.tc.destroy();
         self.local_ctx.deinit();
     }
 
-    /// Elaborate a declaration (no type checking).
-    pub fn elabDecl(self: *Self, c: Command) ParserError!ConstantInfo {
+    /// Elaborate a declaration.
+    /// If `check` is `true`, then declaration is type checked.
+    pub fn elabDecl(self: *Self, c: Command, check: bool) !ConstantInfo {
         switch (c.kind()) {
             .axiom => {
                 const n = c.axiom.ident;
@@ -57,13 +64,22 @@ pub const Elab = struct {
                 // TODO: implement levelParams
                 return .{ .axiomInfo = .{ .name = n, .levelParams = &.{}, .type = typ } }; 
             },
-            .defn => {
+            .def => {
                 const n = c.def.ident;
                 std.debug.assert(c.def.val != null);
-                const typ = if (c.def.typ) |t| try self.elabTerm(t) else null;
+                var typ = if (c.def.typ) |t| try self.elabTerm(t) else null;
                 const val = try self.elabTerm(c.def.val.?);
+                if (typ == null) {
+                    typ = try self.tc.inferType(val, check);
+                } else if (check) {
+                    const infer_typ = try self.tc.inferType(val, check);
+                    if (!(try self.tc.isDefEq(infer_typ, typ.?))) {
+                        return KernelError.DeclTypeMismatch;
+                    }
+                }
                 // TODO: implement levelParams
-                return .{ .defnInfo = .{ .name = n, .levelParams = &.{}, .type = typ, .value = val }  };
+                std.debug.assert(typ != null);
+                return .{ .defnInfo = .{ .name = n, .levelParams = &.{}, .type = typ.?, .value = val }  };
             },
             else => unreachable
         }
